@@ -36,6 +36,7 @@ import PracticePanel from "../panels/practice/PracticePanel";
 import Board from "./Board";
 import EditingCard from "./EditingCard";
 import EvalListener from "./EvalListener";
+import FenListener from "../FenListener";
 
 function BoardAnalysis() {
   const { t } = useTranslation();
@@ -128,6 +129,7 @@ function BoardAnalysis() {
   return (
     <>
       <EvalListener />
+      <FenListener />
       <Portal target="#left" style={{ height: "100%" }}>
         <Board
           practicing={practicing}

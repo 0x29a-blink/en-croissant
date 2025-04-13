@@ -37,6 +37,9 @@ import { z } from "zod";
 import type { Session } from "../utils/session";
 import { createAsyncZodStorage, createZodStorage, fileStorage } from "./utils";
 
+// Added for FEN Sync toggle
+export const fenSyncEnabledAtom = atomWithStorage<boolean>("fen-sync-enabled", false);
+
 const zodArray = <S>(itemSchema: z.ZodType<S>) => {
   const catchValue = {} as never;
 

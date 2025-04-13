@@ -44,10 +44,6 @@ import "@/styles/global.css";
 import { commands } from "./bindings";
 import { openFile } from "./utils/files";
 
-const colorSchemeManager = localStorageColorSchemeManager({
-  key: "mantine-color-scheme",
-});
-
 import ErrorComponent from "@/components/ErrorComponent";
 import { documentDir, resolve } from "@tauri-apps/api/path";
 import { routeTree } from "./routeTree.gen";
@@ -76,6 +72,10 @@ declare module "@tanstack/react-router" {
     router: typeof router;
   }
 }
+
+const colorSchemeManager = localStorageColorSchemeManager({
+  key: "mantine-color-scheme",
+});
 
 export default function App() {
   const primaryColor = useAtomValue(primaryColorAtom);

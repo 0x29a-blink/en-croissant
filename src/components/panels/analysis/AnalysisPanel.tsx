@@ -7,6 +7,7 @@ import {
   enableAllAtom,
   engineMovesFamily,
   enginesAtom,
+  fenSyncEnabledAtom,
 } from "@/state/atoms";
 import { getVariationLine } from "@/utils/chess";
 import { getPiecesCount, hasCaptures, positionFromFen } from "@/utils/chessops";
@@ -23,6 +24,7 @@ import {
   ScrollArea,
   Space,
   Stack,
+  Switch,
   Tabs,
   Text,
 } from "@mantine/core";
@@ -78,6 +80,7 @@ function AnalysisPanel() {
 
   const [tab, setTab] = useAtom(currentAnalysisTabAtom);
   const [expanded, setExpanded] = useAtom(currentExpandedEnginesAtom);
+  const [fenSyncEnabled, setFenSyncEnabled] = useAtom(fenSyncEnabledAtom);
 
   const [pos] = positionFromFen(currentNodeFen);
   const navigate = useNavigate();
@@ -124,27 +127,27 @@ function AnalysisPanel() {
                   <Space h="sm" />
                 </>
               )}
-            {loadedEngines.length > 1 && (
-              <Paper withBorder p="xs" flex={1}>
-                <Group w="100%">
-                  <Stack w="6rem" gap="xs">
-                    <Text ta="center" fw="bold">
-                      {t("Board.Analysis.Summary")}
-                    </Text>
-                    <Button
-                      rightSection={
-                        allEnabled ? (
-                          <IconPlayerPause size="1.2rem" />
-                        ) : (
-                          <IconChevronsRight size="1.2rem" />
-                        )
-                      }
-                      variant={allEnabled ? "filled" : "default"}
-                      onClick={() => enable(!allEnabled)}
-                    >
-                      {allEnabled ? t("Common.Stop") : t("Common.Run")}
-                    </Button>
-                  </Stack>
+            <Paper withBorder p="xs" mb="sm">
+              <Group justify="space-between">
+                <Stack w="6rem" gap="xs">
+                  <Text ta="center" fw="bold" fz="xs">
+                    {t("Board.Analysis.Engines")}
+                  </Text>
+                  <Button
+                    rightSection={
+                      allEnabled ? (
+                        <IconPlayerPause size="1.2rem" />
+                      ) : (
+                        <IconChevronsRight size="1.2rem" />
+                      )
+                    }
+                    variant={allEnabled ? "filled" : "default"}
+                    onClick={() => enable(!allEnabled)}
+                  >
+                    {allEnabled ? t("Common.Stop") : t("Common.Run")}
+                  </Button>
+                </Stack>
+                {loadedEngines.length > 1 && (
                   <Group grow flex={1}>
                     {loadedEngines.map((engine, i) => (
                       <EngineSummary
@@ -156,9 +159,19 @@ function AnalysisPanel() {
                       />
                     ))}
                   </Group>
-                </Group>
-              </Paper>
-            )}
+                )}
+                <Stack w="auto" gap="xs" align="flex-end">
+                  <Text ta="center" fw="bold" fz="xs">
+                    FEN Sync
+                  </Text>
+                  <Switch
+                    checked={fenSyncEnabled}
+                    onChange={(event) => setFenSyncEnabled(event.currentTarget.checked)}
+                    size="md"
+                  />
+                </Stack>
+              </Group>
+            </Paper>
             <Stack mt="sm">
               <Accordion
                 variant="separated"

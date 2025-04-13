@@ -74,13 +74,19 @@ export function countMainPly(node: TreeNode): number {
 }
 
 export function defaultTree(fen?: string): TreeState {
-  const [pos] = positionFromFen(fen ?? INITIAL_FEN);
+  let [pos, error] = positionFromFen(fen ?? INITIAL_FEN);
+  let validFen = fen?.trim() ?? INITIAL_FEN;
+  if (!pos) {
+    console.warn("[defaultTree] Invalid FEN provided, falling back to INITIAL_FEN:", fen);
+    [pos] = positionFromFen(INITIAL_FEN);
+    validFen = INITIAL_FEN;
+  }
 
   return {
     dirty: false,
     position: [],
     root: {
-      fen: fen?.trim() ?? INITIAL_FEN,
+      fen: validFen,
       move: null,
       san: null,
       children: [],
@@ -93,7 +99,7 @@ export function defaultTree(fen?: string): TreeState {
     },
     headers: {
       id: 0,
-      fen: fen ?? INITIAL_FEN,
+      fen: validFen,
       black: "",
       white: "",
       result: "*",

@@ -3,6 +3,8 @@
     windows_subsystem = "windows"
 )]
 
+use tauri::Emitter;
+
 mod chess;
 mod db;
 mod error;
@@ -28,8 +30,13 @@ use oauth::AuthState;
 use specta_typescript::{BigIntExportBehavior, Typescript};
 use sysinfo::SystemExt;
 use tauri::path::BaseDirectory;
-use tauri::{Manager, Window};
+use tauri::{Manager, Window, AppHandle};
 use tauri_plugin_log::{Target, TargetKind};
+use axum::{
+    routing::{get, post},
+    Extension, Router,
+};
+use std::net::SocketAddr;
 
 use crate::chess::{
     analyze_game, get_engine_config, get_engine_logs, kill_engine, kill_engines, stop_engine,
@@ -106,6 +113,15 @@ async fn close_splashscreen(window: Window) -> Result<(), String> {
         .show()
         .unwrap();
     Ok(())
+}
+
+// Handler for the FEN POST request
+async fn handle_fen(Extension(app_handle): Extension<AppHandle>, fen: String) {
+    log::info!("[FEN Sync] Received FEN: {}", fen);
+    // Emit the FEN update event to the frontend
+    if let Err(e) = app_handle.emit("fen-update", &fen) { // Pass fen by reference
+        log::error!("[FEN Sync] Failed to emit fen-update event: {}", e);
+    }
 }
 
 fn main() {
@@ -200,6 +216,32 @@ fn main() {
         .plugin(tauri_plugin_os::init())
         .setup(move |app| {
             log::info!("Setting up application");
+            let app_handle = app.handle().clone(); // Clone AppHandle for async tasks
+
+            // --- Start FEN Sync Server --- 
+            tauri::async_runtime::spawn(async move {
+                let fen_sync_router = Router::new()
+                    .route("/fen", post(handle_fen))
+                    .layer(Extension(app_handle.clone())); // Provide cloned AppHandle
+
+                let addr_str = "127.0.0.1:3030";
+                let addr: SocketAddr = match addr_str.parse() {
+                    Ok(addr) => addr,
+                    Err(e) => {
+                        log::error!("[FEN Sync] Failed to parse address '{}': {}", addr_str, e);
+                        return;
+                    }
+                };
+
+                log::info!("[FEN Sync] Starting server on {}", addr);
+                if let Err(e) = axum::Server::bind(&addr)
+                    .serve(fen_sync_router.into_make_service())
+                    .await
+                {
+                    log::error!("[FEN Sync] Server failed to start: {}", e);
+                }
+            });
+            // --- End FEN Sync Server ---
 
             log::info!("Checking for required directories");
             for (dir, path) in REQUIRED_DIRS.iter() {
