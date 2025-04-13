@@ -12,13 +12,19 @@
     <a href="https://www.encroissant.org"><strong>encroissant.org</strong></a>
     <br />
     <br />
-    <a href="https://discord.gg/tdYzfDbSSW">Discord Server</a>
-    ·
-    <a href="https://www.encroissant.org/download">Download</a>
+    <a href="https://discord.gg/tdYzfDbSSW">En Croissant Official Discord Server</a>
     .
     <a href="https://www.encroissant.org/docs">Explore the docs</a>
   </p>
 </div>
+
+---
+
+> **Notice: This is a personally maintained fork of [En Croissant](https://github.com/franciscoBSalgueiro/en-croissant).
+> This version may diverge from the original and will likely be modified in the future.
+> Please support and credit the original creators!**
+
+---
 
 En-Croissant is an open-source, cross-platform chess GUI that aims to be powerful, customizable and easy to use.
 
@@ -40,7 +46,7 @@ Refer to the [Tauri documentation](https://tauri.app/v1/guides/getting-started/p
 En-Croissant uses pnpm as the package manager for dependencies. Refer to the [pnpm install instructions](https://pnpm.io/installation) for how to install it on your platform.
 
 ```bash
-git clone https://github.com/franciscoBSalgueiro/en-croissant
+git clone https://github.com/0x29a-blink/en-croissant
 cd en-croissant
 pnpm install
 pnpm build
@@ -50,7 +56,8 @@ The built app can be found at `src-tauri/target/release`
 
 ## Donate
 
-If you wish to support the development of this GUI, you can do so [here](https://encroissant.org/support). All donations are greatly appreciated!
+Please support the original creators of En Croissant by donating [here](https://encroissant.org/support).
+All donations go directly to the original En Croissant team.
 
 ## Contributing
 
