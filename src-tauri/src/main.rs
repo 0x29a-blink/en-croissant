@@ -33,8 +33,9 @@ use tauri::path::BaseDirectory;
 use tauri::{Manager, Window, AppHandle};
 use tauri_plugin_log::{Target, TargetKind};
 use axum::{
-    routing::{get, post},
-    Extension, Router,
+    routing::post,
+    extract::ws::{Message, WebSocket, WebSocketUpgrade},
+    Extension, Router, response::IntoResponse,
 };
 use std::net::SocketAddr;
 
@@ -122,6 +123,92 @@ async fn handle_fen(Extension(app_handle): Extension<AppHandle>, fen: String) {
     if let Err(e) = app_handle.emit("fen-update", &fen) { // Pass fen by reference
         log::error!("[FEN Sync] Failed to emit fen-update event: {}", e);
     }
+}
+
+// WebSocket handler for real-time communication
+async fn websocket_handler(ws: WebSocketUpgrade, Extension(app_handle): Extension<AppHandle>) -> impl IntoResponse {
+    ws.on_upgrade(|socket| handle_socket(socket, app_handle))
+}
+
+async fn handle_socket(mut socket: WebSocket, app_handle: AppHandle) {
+    log::info!("[WebSocket] Client connected");
+    
+    // Send a welcome message
+    if let Err(e) = socket.send(Message::Text(String::from("{\"status\":\"connected\"}"))).await {
+        log::error!("[WebSocket] Failed to send welcome message: {}", e);
+        return;
+    }
+    
+    while let Some(result) = socket.recv().await {
+        match result {
+            Ok(Message::Text(text)) => {
+                log::info!("[WebSocket] Received text message");
+                
+                // Try to parse as JSON
+                match serde_json::from_str::<serde_json::Value>(&text) {
+                    Ok(json_data) => {
+                        // Check if this is analysis data with the expected structure
+                        if let Some(engine_id) = json_data.get("engineId") {
+                            if let Some(analysis) = json_data.get("analysis") {
+                                if analysis.is_array() {
+                                    log::info!("[WebSocket] Received analysis from engine: {}", engine_id);
+                                    
+                                    // Emit the analysis update event to the frontend
+                                    if let Err(e) = app_handle.emit("analysis-update", &text) {
+                                        log::error!("[WebSocket] Failed to emit analysis-update event: {}", e);
+                                    }
+                                    
+                                    // Send acknowledgment back to client
+                                    if let Err(e) = socket.send(Message::Text(String::from("{\"status\":\"received\"}"))).await {
+                                        log::error!("[WebSocket] Failed to send acknowledgment: {}", e);
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
+                        
+                        // If we get here, it's not a properly formatted analysis message
+                        log::warn!("[WebSocket] Received malformed or unexpected message structure: {}", text);
+                        if let Err(e) = socket.send(Message::Text(String::from("{\"status\":\"error\",\"message\":\"Invalid message format\"}"))).await {
+                            log::error!("[WebSocket] Failed to send error response: {}", e);
+                        }
+                    },
+                    Err(e) => {
+                        log::warn!("[WebSocket] Failed to parse message as JSON: {}", e);
+                        if let Err(e) = socket.send(Message::Text(String::from("{\"status\":\"error\",\"message\":\"Invalid JSON\"}"))).await {
+                            log::error!("[WebSocket] Failed to send error response: {}", e);
+                        }
+                    }
+                }
+            },
+            Ok(Message::Binary(_)) => {
+                log::info!("[WebSocket] Received binary message (unsupported)");
+                if let Err(e) = socket.send(Message::Text(String::from("{\"status\":\"error\",\"message\":\"Binary messages not supported\"}"))).await {
+                    log::error!("[WebSocket] Failed to send error response: {}", e);
+                }
+            },
+            Ok(Message::Ping(data)) => {
+                // Automatically respond to pings
+                if let Err(e) = socket.send(Message::Pong(data)).await {
+                    log::error!("[WebSocket] Failed to send pong: {}", e);
+                    break;
+                }
+            },
+            Ok(Message::Pong(_)) => {
+                // Ignore pong responses
+            },
+            Ok(Message::Close(_)) => {
+                log::info!("[WebSocket] Client disconnected");
+                break;
+            },
+            Err(e) => {
+                log::error!("[WebSocket] Error receiving message: {}", e);
+                break;
+            }
+        }
+    }
+    
+    log::info!("[WebSocket] Connection closed");
 }
 
 fn main() {
@@ -222,6 +309,7 @@ fn main() {
             tauri::async_runtime::spawn(async move {
                 let fen_sync_router = Router::new()
                     .route("/fen", post(handle_fen))
+                    .route("/ws", axum::routing::get(websocket_handler)) // Use axum's built-in WebSocket handler
                     .layer(Extension(app_handle.clone())); // Provide cloned AppHandle
 
                 let addr_str = "127.0.0.1:3030";

@@ -52,7 +52,7 @@ bincode = "2.0.0-rc.3"
 thiserror = "1.0.48"
 log = "0.4.20"
 oauth2 = "4.4.2"
-axum = "0.6.20"
+axum = { version = "0.6.20", features = ["ws"] }
 tar = "0.4.40"
 sysinfo = "0.29.10"
 governor = "0.6.3"

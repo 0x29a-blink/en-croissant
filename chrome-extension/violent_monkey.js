@@ -25,6 +25,316 @@
     const PLAYER_BOX_SELECTOR = '.playerbox-component';
     const DEBOUNCE_DELAY_MS = 750;
 
+    // --- WebSocket Configuration ---
+    const WS_URL = 'ws://127.0.0.1:3030/ws';
+    let ws;
+
+    // --- Analysis Visualization Configuration ---
+    const ARROW_COLORS = {
+        singleEngine: [
+            '#00FF00', // Best move (bright green)
+            '#80FF00', // 2nd best (yellow-green)
+            '#FFFF00', // 3rd best (yellow)
+            '#FF8000', // 4th best (orange)
+            '#FF0000'  // 5th best (red)
+        ],
+        engines: {
+            // Default colors for common engines - can be expanded
+            'stockfish': '#3692E7',  // blue
+            'lc0': '#E736C5',        // pink
+            'komodo': '#8DE736',     // green
+            'default': '#E7A336'     // orange (for any other engine)
+        }
+    };
+    const ARROW_WIDTH = 8;      // Width of the arrows in pixels
+    const ARROW_OPACITY = 0.8;  // Opacity of the arrows (0-1)
+    const SHOW_LABELS = true;   // Whether to show move rank labels
+
+    // Storage for active analysis
+    let currentAnalysis = {}; // Format: { engineId: [{ move, score, rank }, ...], ... }
+    let analysisOverlay;      // The SVG overlay for drawing arrows
+    let labelContainer;       // Container for text labels
+
+    function connectWebSocket() {
+        console.log('[WebSocket] Connecting to backend...');
+        ws = new WebSocket(WS_URL);
+
+        ws.onopen = () => {
+            console.log('[WebSocket] Connected to backend.');
+        };
+
+        ws.onmessage = (event) => {
+            console.log('[WebSocket] Message received');
+            try {
+                const data = JSON.parse(event.data);
+                
+                // Handle analysis update
+                if (data.engineId && data.analysis) {
+                    // Store the analysis data
+                    currentAnalysis[data.engineId] = data.analysis.map((item, index) => ({
+                        move: item.move,
+                        score: item.score,
+                        rank: index + 1 // Ensure rank starts at 1
+                    }));
+                    
+                    // Draw the analysis visualization
+                    drawAnalysisOnBoard();
+                }
+            } catch (e) {
+                console.error('[WebSocket] Failed to parse message:', e);
+            }
+        };
+
+        ws.onclose = () => {
+            console.log('[WebSocket] Disconnected. Reconnecting in 5 seconds...');
+            clearAnalysisVisuals(); // Clear visuals on disconnect
+            setTimeout(connectWebSocket, 5000);
+        };
+
+        ws.onerror = (error) => {
+            console.error('[WebSocket] Error:', error);
+        };
+    }
+
+    // Initialize WebSocket connection
+    connectWebSocket();
+
+    /**
+     * Creates the SVG overlay for drawing arrows on the board
+     */
+    function createAnalysisOverlay() {
+        if (analysisOverlay) return; // Already created
+        
+        const boardElement = document.querySelector('.TheBoard-layers');
+        if (!boardElement) return;
+        
+        // Create SVG overlay
+        analysisOverlay = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        analysisOverlay.setAttribute('class', 'analysis-arrows-overlay');
+        analysisOverlay.style.position = 'absolute';
+        analysisOverlay.style.top = '0';
+        analysisOverlay.style.left = '0';
+        analysisOverlay.style.width = '100%';
+        analysisOverlay.style.height = '100%';
+        analysisOverlay.style.pointerEvents = 'none';
+        analysisOverlay.style.zIndex = '5'; // Above pieces but below hover effects
+        boardElement.appendChild(analysisOverlay);
+        
+        // Create label container
+        labelContainer = document.createElement('div');
+        labelContainer.setAttribute('class', 'analysis-labels-container');
+        labelContainer.style.position = 'absolute';
+        labelContainer.style.top = '0';
+        labelContainer.style.left = '0';
+        labelContainer.style.width = '100%';
+        labelContainer.style.height = '100%';
+        labelContainer.style.pointerEvents = 'none';
+        labelContainer.style.zIndex = '6';
+        boardElement.appendChild(labelContainer);
+    }
+
+    /**
+     * Clears all analysis visualizations from the board
+     */
+    function clearAnalysisVisuals() {
+        if (analysisOverlay) {
+            while (analysisOverlay.firstChild) {
+                analysisOverlay.removeChild(analysisOverlay.firstChild);
+            }
+        }
+        
+        if (labelContainer) {
+            while (labelContainer.firstChild) {
+                labelContainer.removeChild(labelContainer.firstChild);
+            }
+        }
+    }
+
+    /**
+     * Draws arrows on the board based on current analysis
+     */
+    function drawAnalysisOnBoard() {
+        // Ensure we have the overlay
+        createAnalysisOverlay();
+        
+        // Clear previous drawings
+        clearAnalysisVisuals();
+        
+        // Get all active engines
+        const activeEngines = Object.keys(currentAnalysis);
+        if (activeEngines.length === 0) return;
+        
+        // Get the board dimensions for calculations
+        const boardDimensions = getBoardDimensions();
+        if (!boardDimensions) return;
+        
+        const { playingAsBlack } = determinePlayerColor();
+        
+        if (activeEngines.length === 1) {
+            // Single engine mode: gradient color
+            const engineId = activeEngines[0];
+            const analysis = currentAnalysis[engineId];
+            
+            if (!analysis || analysis.length === 0) return;
+            
+            analysis.forEach((line, index) => {
+                if (!line.move) return;
+                
+                const color = ARROW_COLORS.singleEngine[Math.min(index, ARROW_COLORS.singleEngine.length - 1)];
+                const from = line.move.substring(0, 2);
+                const to = line.move.substring(2, 4);
+                
+                drawArrow(from, to, color, line.rank, boardDimensions, playingAsBlack);
+            });
+        } else {
+            // Multi-engine mode: one color per engine
+            activeEngines.forEach(engineId => {
+                const analysis = currentAnalysis[engineId];
+                if (!analysis || analysis.length === 0) return;
+                
+                // Get the color for this engine
+                const color = ARROW_COLORS.engines[engineId.toLowerCase()] || ARROW_COLORS.engines.default;
+                
+                analysis.forEach(line => {
+                    if (!line.move) return;
+                    
+                    const from = line.move.substring(0, 2);
+                    const to = line.move.substring(2, 4);
+                    
+                    drawArrow(from, to, color, line.rank, boardDimensions, playingAsBlack);
+                });
+            });
+        }
+    }
+
+    /**
+     * Draws an arrow on the board
+     * @param {string} from - Starting square (e.g., "e2")
+     * @param {string} to - Ending square (e.g., "e4")
+     * @param {string} color - Arrow color in hex format
+     * @param {number} rank - Move rank for labeling
+     * @param {object} dimensions - Board dimensions
+     * @param {boolean} playingAsBlack - Whether we're playing as black
+     */
+    function drawArrow(from, to, color, rank, dimensions, playingAsBlack) {
+        const { squareSize } = dimensions;
+        
+        // Convert chess notation to coordinates
+        const fromCoords = getSquareCoordinates(from, squareSize, playingAsBlack);
+        const toCoords = getSquareCoordinates(to, squareSize, playingAsBlack);
+        
+        if (!fromCoords || !toCoords) return;
+        
+        // Create arrow path
+        const arrowPath = createArrowPath(fromCoords, toCoords, ARROW_WIDTH);
+        
+        // Create SVG path element
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        path.setAttribute('d', arrowPath);
+        path.setAttribute('fill', color);
+        path.setAttribute('stroke', 'none');
+        path.setAttribute('opacity', ARROW_OPACITY);
+        analysisOverlay.appendChild(path);
+        
+        // Add label if enabled
+        if (SHOW_LABELS && rank) {
+            const label = document.createElement('div');
+            label.textContent = rank;
+            label.style.position = 'absolute';
+            label.style.left = `${toCoords.x - 6}px`;
+            label.style.top = `${toCoords.y - 6}px`;
+            label.style.width = '12px';
+            label.style.height = '12px';
+            label.style.borderRadius = '50%';
+            label.style.backgroundColor = color;
+            label.style.color = 'white';
+            label.style.fontSize = '10px';
+            label.style.fontWeight = 'bold';
+            label.style.display = 'flex';
+            label.style.justifyContent = 'center';
+            label.style.alignItems = 'center';
+            label.style.zIndex = '7';
+            labelContainer.appendChild(label);
+        }
+    }
+
+    /**
+     * Creates an SVG path for an arrow
+     * @param {object} from - Starting coordinates {x, y}
+     * @param {object} to - Ending coordinates {x, y}
+     * @param {number} width - Arrow width
+     * @returns {string} SVG path definition
+     */
+    function createArrowPath(from, to, width) {
+        // Calculate arrow direction
+        const dx = to.x - from.x;
+        const dy = to.y - from.y;
+        const angle = Math.atan2(dy, dx);
+        
+        // Calculate arrow length (slightly shorter than full distance)
+        const length = Math.sqrt(dx * dx + dy * dy) * 0.75;
+        
+        // Calculate end point (backing off from target center)
+        const endX = from.x + Math.cos(angle) * length;
+        const endY = from.y + Math.sin(angle) * length;
+        
+        // Calculate arrowhead points
+        const headSize = width * 2;
+        const arrowhead1X = endX - headSize * Math.cos(angle - Math.PI/6);
+        const arrowhead1Y = endY - headSize * Math.sin(angle - Math.PI/6);
+        const arrowhead2X = endX - headSize * Math.cos(angle + Math.PI/6);
+        const arrowhead2Y = endY - headSize * Math.sin(angle + Math.PI/6);
+        
+        // Calculate shaft points
+        const shaftWidth = width / 2;
+        const shaftAngle = angle + Math.PI/2;
+        
+        const shaft1X = from.x + shaftWidth * Math.cos(shaftAngle);
+        const shaft1Y = from.y + shaftWidth * Math.sin(shaftAngle);
+        const shaft2X = from.x - shaftWidth * Math.cos(shaftAngle);
+        const shaft2Y = from.y - shaftWidth * Math.sin(shaftAngle);
+        
+        const shaft3X = endX - shaftWidth * Math.cos(shaftAngle);
+        const shaft3Y = endY - shaftWidth * Math.sin(shaftAngle);
+        const shaft4X = endX + shaftWidth * Math.cos(shaftAngle);
+        const shaft4Y = endY + shaftWidth * Math.sin(shaftAngle);
+        
+        // Build SVG path
+        return `M ${shaft1X} ${shaft1Y} ` +
+               `L ${shaft4X} ${shaft4Y} ` +
+               `L ${arrowhead1X} ${arrowhead1Y} ` +
+               `L ${endX} ${endY} ` +
+               `L ${arrowhead2X} ${arrowhead2Y} ` +
+               `L ${shaft3X} ${shaft3Y} ` +
+               `L ${shaft2X} ${shaft2Y} Z`;
+    }
+
+    /**
+     * Converts chess square notation to coordinates
+     * @param {string} square - Chess square (e.g., "e4")
+     * @param {number} squareSize - Size of a board square in pixels
+     * @param {boolean} playingAsBlack - Whether board is flipped (playing as black)
+     * @returns {object|null} Coordinates {x, y} or null if invalid
+     */
+    function getSquareCoordinates(square, squareSize, playingAsBlack) {
+        if (!square || square.length !== 2) return null;
+        
+        const file = square.charCodeAt(0) - 'a'.charCodeAt(0); // 0-7 for a-h
+        const rank = 8 - parseInt(square[1], 10); // 0-7 for 8-1
+        
+        if (file < 0 || file > 7 || rank < 0 || rank > 7) return null;
+        
+        // If playing as black, the board is flipped
+        const adjustedFile = playingAsBlack ? 7 - file : file;
+        const adjustedRank = playingAsBlack ? 7 - rank : rank;
+        
+        // Calculate pixel coordinates (center of the square)
+        const x = (adjustedFile + 0.5) * squareSize;
+        const y = (adjustedRank + 0.5) * squareSize;
+        
+        return { x, y };
+    }
+
     // --- State ---
     let currentFen = '';
     let debounceTimer = null;
