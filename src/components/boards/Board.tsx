@@ -69,7 +69,7 @@ import { chessgroundDests, chessgroundMove } from "chessops/compat";
 import { makeSan } from "chessops/san";
 import domtoimage from "dom-to-image";
 import { useAtom, useAtomValue } from "jotai";
-import { memo, useCallback, useContext, useMemo, useState } from "react";
+import { memo, useCallback, useContext, useMemo, useState, useEffect, useRef } from "react";
 import { Helmet } from "react-helmet";
 import { useHotkeys } from "react-hotkeys-hook";
 import { useTranslation } from "react-i18next";
@@ -221,6 +221,18 @@ function Board({
       game: currentTab?.gameNumber || 0,
     }),
   );
+
+  const wsRef = useRef<WebSocket | null>(null);
+  
+  useEffect(() => {
+    wsRef.current = new WebSocket('ws://localhost:3030/ws');
+    
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+    };
+  }, []);
 
   async function makeMove(move: NormalMove) {
     if (!pos) return;
@@ -378,6 +390,40 @@ function Board({
         lineWidth: shape.modifiers?.lineWidth
       }))
     });
+
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      // Log the data we're about to send
+      console.log('[Board] Sending engine visualization data:', {
+        engineId: "board_visualization",
+        analysis: shapes.map(shape => ({
+          move: `${shape.orig}-${shape.dest}`,
+          score: engineLines[0]?.variations[0]?.winChance || 0,
+          rank: shapes.indexOf(shape) + 1
+        }))
+      });
+
+      wsRef.current.send(JSON.stringify({
+        engineId: "board_visualization",
+        analysis: shapes.map(shape => ({
+          move: `${shape.orig}-${shape.dest}`,
+          score: engineLines[0]?.variations[0]?.winChance || 0,
+          rank: shapes.indexOf(shape) + 1
+        }))
+      }));
+
+      // Add message confirmation handler
+      wsRef.current.onmessage = (event) => {
+        try {
+          const response = JSON.parse(event.data);
+          console.log('[Board] Received response from server:', response);
+          if (response.status === 'received') {
+            console.log('[Board] Server confirmed receipt of visualization data');
+          }
+        } catch (e) {
+          console.error('[Board] Failed to parse server response:', e);
+        }
+      };
+    }
   }
 
   if (currentNode.shapes.length > 0) {

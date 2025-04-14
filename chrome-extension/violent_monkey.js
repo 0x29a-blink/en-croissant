@@ -56,43 +56,113 @@
     let labelContainer;       // Container for text labels
 
     function connectWebSocket() {
-        console.log('[WebSocket] Connecting to backend...');
+        console.log('[WebSocket] ====== INITIALIZING WEBSOCKET CONNECTION ======');
+        console.log('[WebSocket] Creating new WebSocket connection to:', WS_URL);
         ws = new WebSocket(WS_URL);
 
         ws.onopen = () => {
-            console.log('[WebSocket] Connected to backend.');
+            console.log('[WebSocket] ====== WEBSOCKET CONNECTION ESTABLISHED ======');
+            console.log('[WebSocket] Connection opened successfully');
+            console.log('[WebSocket] WebSocket readyState:', ws.readyState);
+            console.log('[WebSocket] WebSocket protocol:', ws.protocol);
+            console.log('[WebSocket] WebSocket extensions:', ws.extensions);
         };
 
         ws.onmessage = (event) => {
-            console.log('[WebSocket] Message received');
+            console.log('[WebSocket] ====== NEW MESSAGE RECEIVED ======');
+            console.log('[WebSocket] Raw message data:', event.data);
+            console.log('[WebSocket] WebSocket readyState:', ws.readyState);
+            
             try {
                 const data = JSON.parse(event.data);
+                console.log('[WebSocket] Parsed JSON data:', data);
                 
-                // Handle analysis update
-                if (data.engineId && data.analysis) {
-                    // Store the analysis data
-                    currentAnalysis[data.engineId] = data.analysis.map((item, index) => ({
-                        move: item.move,
-                        score: item.score,
-                        rank: index + 1 // Ensure rank starts at 1
-                    }));
+                // Handle connection status
+                if (data.status === 'connected') {
+                    console.log('[WebSocket] Connection status message received');
+                    console.log('[WebSocket] Connection confirmed by server');
+                    return;
+                }
+                
+                // Handle engine visualization update
+                if (data.engineId === "board_visualization" && data.analysis) {
+                    console.log('[WebSocket] Board visualization message received');
+                    console.log('[WebSocket] Analysis data:', data.analysis);
                     
-                    // Draw the analysis visualization
-                    drawAnalysisOnBoard();
+                    // Convert analysis format to visualization format
+                    const visualization = {
+                        totalEngines: 1,
+                        enabledEngines: 1,
+                        engineLines: {
+                            "0": {
+                                engineIndex: 0,
+                                bestWinChance: data.analysis[0]?.score || 0,
+                                variations: [{
+                                    variationIndex: 0,
+                                    winChance: data.analysis[0]?.score || 0,
+                                    arrows: data.analysis.map(item => {
+                                        console.log('[WebSocket] Processing analysis item:', item);
+                                        const [from, to] = item.move.split('-');
+                                        const arrow = {
+                                            from,
+                                            to,
+                                            color: ARROW_COLORS.singleEngine[Math.min(item.rank - 1, ARROW_COLORS.singleEngine.length - 1)],
+                                            lineWidth: ARROW_WIDTH,
+                                            isMainLine: item.rank === 1,
+                                            moveNumber: item.rank
+                                        };
+                                        console.log('[WebSocket] Created arrow:', arrow);
+                                        return arrow;
+                                    })
+                                }]
+                            }
+                        },
+                        finalShapes: data.analysis.map(item => {
+                            console.log('[WebSocket] Processing final shape:', item);
+                            const [from, to] = item.move.split('-');
+                            const shape = {
+                                from,
+                                to,
+                                color: ARROW_COLORS.singleEngine[Math.min(item.rank - 1, ARROW_COLORS.singleEngine.length - 1)],
+                                lineWidth: ARROW_WIDTH,
+                                moveNumber: item.rank
+                            };
+                            console.log('[WebSocket] Created shape:', shape);
+                            return shape;
+                        })
+                    };
+                    
+                    console.log('[WebSocket] Converted visualization data:', visualization);
+                    console.log('[WebSocket] Calling renderEngineVisualization...');
+                    renderEngineVisualization(visualization);
+                    console.log('[WebSocket] ====== MESSAGE PROCESSING COMPLETE ======');
+                } else {
+                    console.log('[WebSocket] Unhandled message format:', data);
+                    console.log('[WebSocket] Expected engineId: "board_visualization" and analysis array');
+                    console.log('[WebSocket] ====== MESSAGE PROCESSING COMPLETE ======');
                 }
             } catch (e) {
                 console.error('[WebSocket] Failed to parse message:', e);
+                console.error('[WebSocket] Raw message that failed to parse:', event.data);
+                console.log('[WebSocket] ====== MESSAGE PROCESSING FAILED ======');
             }
         };
 
-        ws.onclose = () => {
-            console.log('[WebSocket] Disconnected. Reconnecting in 5 seconds...');
-            clearAnalysisVisuals(); // Clear visuals on disconnect
+        ws.onclose = (event) => {
+            console.log('[WebSocket] ====== WEBSOCKET CONNECTION CLOSED ======');
+            console.log('[WebSocket] Close event:', event);
+            console.log('[WebSocket] Code:', event.code);
+            console.log('[WebSocket] Reason:', event.reason);
+            console.log('[WebSocket] Was clean:', event.wasClean);
+            clearAnalysisVisuals();
+            console.log('[WebSocket] Reconnecting in 5 seconds...');
             setTimeout(connectWebSocket, 5000);
         };
 
         ws.onerror = (error) => {
-            console.error('[WebSocket] Error:', error);
+            console.error('[WebSocket] ====== WEBSOCKET ERROR ======');
+            console.error('[WebSocket] Error event:', error);
+            console.error('[WebSocket] WebSocket readyState:', ws.readyState);
         };
     }
 
@@ -412,15 +482,30 @@
             return null;
         }
         
-        const boardSize = boardContainer.clientWidth;
-        if (!boardSize || boardSize <= 0) {
-            console.error('[FEN Sender] Board container has zero size.');
+        // Get the actual board element that contains the pieces
+        const boardElement = boardContainer.querySelector('.board') || boardContainer;
+        if (!boardElement) {
+            console.error('[FEN Sender] Board element not found.');
             return null;
         }
         
+        // Get the computed style to handle any transforms or scaling
+        const style = window.getComputedStyle(boardElement);
+        const width = parseFloat(style.width);
+        const height = parseFloat(style.height);
+        
+        if (!width || !height || width <= 0 || height <= 0) {
+            console.error('[FEN Sender] Board element has invalid dimensions:', { width, height });
+            return null;
+        }
+        
+        // Calculate square size based on the smaller dimension to ensure it fits
+        const squareSize = Math.min(width, height) / 8;
+        
+        console.log('[FEN Sender] Board dimensions:', { width, height, squareSize });
         return { 
-            boardSize, 
-            squareSize: boardSize / 8 
+            boardSize: Math.min(width, height),
+            squareSize 
         };
     }
 
@@ -874,7 +959,8 @@
             const newFen = generateFEN();
             
             if (!newFen) {
-                console.warn('[FEN Sender] FEN generation failed');
+                console.warn('[FEN Sender] FEN generation failed, retrying in 1 second...');
+                setTimeout(calculateAndSendFEN, 1000);
                 return;
             }
             
@@ -885,7 +971,8 @@
             }
         } catch (error) {
             console.error('[FEN Sender] Error calculating/sending FEN:', error);
-            currentFen = '';
+            console.log('[FEN Sender] Retrying in 1 second...');
+            setTimeout(calculateAndSendFEN, 1000);
         }
     }
     
@@ -996,4 +1083,95 @@
         }
         clearTimeout(debounceTimer);
     });
+
+    /**
+     * Renders engine visualization data as SVG overlays
+     * @param {Object} visualization - The complete engine visualization data
+     */
+    function renderEngineVisualization(visualization) {
+        // Ensure we have the overlay
+        createAnalysisOverlay();
+        
+        // Clear previous drawings
+        clearAnalysisVisuals();
+        
+        const { engineLines, finalShapes } = visualization;
+        
+        // Get board dimensions for calculations
+        const boardDimensions = getBoardDimensions();
+        if (!boardDimensions) return;
+        
+        const { playingAsBlack } = determinePlayerColor();
+        
+        // Render each engine's lines
+        Object.values(engineLines).forEach(engine => {
+            const engineColor = ARROW_COLORS.engines[engine.engineIndex] || ARROW_COLORS.engines.default;
+            
+            engine.variations.forEach(variation => {
+                variation.arrows.forEach(arrow => {
+                    const color = variation.isMainLine ? engineColor : `${engineColor}80`; // 80 = 50% opacity
+                    drawArrow(
+                        arrow.from,
+                        arrow.to,
+                        color,
+                        arrow.moveNumber,
+                        boardDimensions,
+                        playingAsBlack
+                    );
+                });
+            });
+        });
+        
+        // Render final shapes
+        finalShapes.forEach(shape => {
+            drawArrow(
+                shape.from,
+                shape.to,
+                shape.color,
+                shape.moveNumber || 1,
+                boardDimensions,
+                playingAsBlack
+            );
+        });
+        
+        // Add labels for each engine
+        if (SHOW_LABELS) {
+            Object.values(engineLines).forEach(engine => {
+                const engineColor = ARROW_COLORS.engines[engine.engineIndex] || ARROW_COLORS.engines.default;
+                const bestVariation = engine.variations[0];
+                if (bestVariation && bestVariation.arrows.length > 0) {
+                    const firstArrow = bestVariation.arrows[0];
+                    addEngineLabel(
+                        firstArrow.to,
+                        `Engine ${engine.engineIndex + 1}`,
+                        engineColor,
+                        boardDimensions,
+                        playingAsBlack
+                    );
+                }
+            });
+        }
+    }
+
+    /**
+     * Adds a label for an engine at a specific square
+     */
+    function addEngineLabel(square, text, color, dimensions, playingAsBlack) {
+        const coords = getSquareCoordinates(square, dimensions.squareSize, playingAsBlack);
+        if (!coords) return;
+        
+        const label = document.createElement('div');
+        label.textContent = text;
+        label.style.position = 'absolute';
+        label.style.left = `${coords.x - 15}px`;
+        label.style.top = `${coords.y - 15}px`;
+        label.style.backgroundColor = color;
+        label.style.color = 'white';
+        label.style.padding = '2px 5px';
+        label.style.borderRadius = '3px';
+        label.style.fontSize = '10px';
+        label.style.fontWeight = 'bold';
+        label.style.zIndex = '10';
+        labelContainer.appendChild(label);
+    }
 })();

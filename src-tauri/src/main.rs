@@ -4,6 +4,13 @@
 )]
 
 use tauri::Emitter;
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::{routing::post, Extension, Router, response::IntoResponse};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use futures::stream::{SplitSink, StreamExt};
+use futures::SinkExt;
+use tokio::sync::Mutex as TokioMutex;
 
 mod chess;
 mod db;
@@ -32,11 +39,6 @@ use sysinfo::SystemExt;
 use tauri::path::BaseDirectory;
 use tauri::{Manager, Window, AppHandle};
 use tauri_plugin_log::{Target, TargetKind};
-use axum::{
-    routing::post,
-    extract::ws::{Message, WebSocket, WebSocketUpgrade},
-    Extension, Router, response::IntoResponse,
-};
 use std::net::SocketAddr;
 
 use crate::chess::{
@@ -62,6 +64,14 @@ use crate::{
     opening::{get_opening_from_fen, get_opening_from_name, search_opening_name},
 };
 use tokio::sync::{RwLock, Semaphore};
+
+// Define a type for the shared client state
+// Using TokioMutex for async locking and HashMap to store client senders
+// Key: Unique client ID, Value: Sender part of the WebSocket
+type Clients = Arc<TokioMutex<HashMap<usize, SplitSink<WebSocket, Message>>>>;
+
+// Unique ID generator for clients
+static NEXT_CLIENT_ID: AtomicUsize = AtomicUsize::new(1);
 
 pub type GameData = (
     i32,
@@ -126,89 +136,134 @@ async fn handle_fen(Extension(app_handle): Extension<AppHandle>, fen: String) {
 }
 
 // WebSocket handler for real-time communication
-async fn websocket_handler(ws: WebSocketUpgrade, Extension(app_handle): Extension<AppHandle>) -> impl IntoResponse {
-    ws.on_upgrade(|socket| handle_socket(socket, app_handle))
+async fn websocket_handler(
+    ws: WebSocketUpgrade, 
+    Extension(app_handle): Extension<AppHandle>,
+    Extension(clients): Extension<Clients> // Accept shared state
+) -> impl IntoResponse {
+    ws.on_upgrade(|socket| handle_socket(socket, app_handle, clients)) // Pass state to handle_socket
 }
 
-async fn handle_socket(mut socket: WebSocket, app_handle: AppHandle) {
-    log::info!("[WebSocket] Client connected");
-    
-    // Send a welcome message
-    if let Err(e) = socket.send(Message::Text(String::from("{\"status\":\"connected\"}"))).await {
-        log::error!("[WebSocket] Failed to send welcome message: {}", e);
-        return;
+async fn handle_socket(socket: WebSocket, app_handle: AppHandle, clients: Clients) {
+    // Generate a unique ID for this client
+    let my_id = NEXT_CLIENT_ID.fetch_add(1, Ordering::Relaxed);
+    log::info!("[WebSocket] Client connected: {}", my_id);
+
+    // Split the socket into a sender and receiver
+    let (mut sender, mut receiver) = socket.split();
+
+    // Send the connected status message using format!
+    let welcome_msg = format!("{{\"status\":\"connected\", \"id\": {}}}", my_id);
+    if sender.send(Message::Text(welcome_msg)).await.is_err() {
+        log::error!("[WebSocket] Client {} failed to send welcome message", my_id);
+        return; // Can't send, might as well stop
     }
-    
-    while let Some(result) = socket.recv().await {
+
+    // Add the sender to the shared state
+    clients.lock().await.insert(my_id, sender);
+
+    // Main message loop
+    while let Some(result) = receiver.next().await {
         match result {
-            Ok(Message::Text(text)) => {
-                log::info!("[WebSocket] Received text message");
-                
-                // Try to parse as JSON
-                match serde_json::from_str::<serde_json::Value>(&text) {
-                    Ok(json_data) => {
-                        // Check if this is analysis data with the expected structure
-                        if let Some(engine_id) = json_data.get("engineId") {
-                            if let Some(analysis) = json_data.get("analysis") {
-                                if analysis.is_array() {
-                                    log::info!("[WebSocket] Received analysis from engine: {}", engine_id);
-                                    
-                                    // Emit the analysis update event to the frontend
-                                    if let Err(e) = app_handle.emit("analysis-update", &text) {
-                                        log::error!("[WebSocket] Failed to emit analysis-update event: {}", e);
-                                    }
-                                    
-                                    // Send acknowledgment back to client
-                                    if let Err(e) = socket.send(Message::Text(String::from("{\"status\":\"received\"}"))).await {
-                                        log::error!("[WebSocket] Failed to send acknowledgment: {}", e);
-                                    }
-                                    continue;
-                                }
-                            }
-                        }
-                        
-                        // If we get here, it's not a properly formatted analysis message
-                        log::warn!("[WebSocket] Received malformed or unexpected message structure: {}", text);
-                        if let Err(e) = socket.send(Message::Text(String::from("{\"status\":\"error\",\"message\":\"Invalid message format\"}"))).await {
-                            log::error!("[WebSocket] Failed to send error response: {}", e);
-                        }
-                    },
-                    Err(e) => {
-                        log::warn!("[WebSocket] Failed to parse message as JSON: {}", e);
-                        if let Err(e) = socket.send(Message::Text(String::from("{\"status\":\"error\",\"message\":\"Invalid JSON\"}"))).await {
-                            log::error!("[WebSocket] Failed to send error response: {}", e);
-                        }
-                    }
-                }
-            },
-            Ok(Message::Binary(_)) => {
-                log::info!("[WebSocket] Received binary message (unsupported)");
-                if let Err(e) = socket.send(Message::Text(String::from("{\"status\":\"error\",\"message\":\"Binary messages not supported\"}"))).await {
-                    log::error!("[WebSocket] Failed to send error response: {}", e);
-                }
-            },
-            Ok(Message::Ping(data)) => {
-                // Automatically respond to pings
-                if let Err(e) = socket.send(Message::Pong(data)).await {
-                    log::error!("[WebSocket] Failed to send pong: {}", e);
-                    break;
-                }
-            },
-            Ok(Message::Pong(_)) => {
-                // Ignore pong responses
-            },
-            Ok(Message::Close(_)) => {
-                log::info!("[WebSocket] Client disconnected");
-                break;
-            },
+            Ok(msg) => {
+                // Process the received message
+                process_message(msg, my_id, &app_handle, &clients).await;
+            }
             Err(e) => {
-                log::error!("[WebSocket] Error receiving message: {}", e);
-                break;
+                log::error!("[WebSocket] Error receiving message from client {}: {}", my_id, e);
+                break; // Error, stop processing for this client
             }
         }
     }
-    
-    log::info!("[WebSocket] Connection closed");
+
+    // Client disconnected or errored out, remove from state
+    log::info!("[WebSocket] Client {} disconnected", my_id);
+    clients.lock().await.remove(&my_id);
+}
+
+// Separate function to process messages for clarity
+async fn process_message(msg: Message, my_id: usize, app_handle: &AppHandle, clients: &Clients) {
+    match msg {
+        Message::Text(text) => {
+            log::info!("[WebSocket] Client {} sent text message", my_id);
+
+            match serde_json::from_str::<serde_json::Value>(&text) {
+                Ok(json_data) => {
+                    if json_data.get("engineId").and_then(|v| v.as_str()) == Some("board_visualization") {
+                        log::info!("[WebSocket] Received analysis message from client {}: {}", my_id, text);
+
+                        // --- BROADCAST LOGIC --- 
+                        let mut clients_map = clients.lock().await;
+                        for (&id, sender) in clients_map.iter_mut() {
+                            if id != my_id { // Don't send back to original sender
+                                if sender.send(Message::Text(text.clone())).await.is_err() {
+                                    log::warn!("[WebSocket] Failed to send analysis to client {}, removing.", id);
+                                    // Error sending, likely disconnected - schedule for removal? (Map removal during iteration is tricky)
+                                }
+                            }
+                        }
+                        // --- END BROADCAST --- 
+
+                        // Send confirmation back to the original sender
+                        if let Some(sender) = clients_map.get_mut(&my_id) {
+                           let confirmation = r#"{"status":"received"}"#;
+                           if sender.send(Message::Text(confirmation.to_string())).await.is_err() {
+                               log::warn!("[WebSocket] Failed to send confirmation to client {}", my_id);
+                           }
+                        }
+
+                    } else if json_data.get("fen").is_some() {
+                       log::info!("[WebSocket] Received FEN from client {}: {}", my_id, text);
+                       // If FEN needs broadcasting, add similar logic here
+                       // Emit to Tauri frontend if needed
+                        if let Err(e) = app_handle.emit("fen-update", &text) {
+                           log::error!("[WebSocket] Failed to emit fen-update from WS: {}", e);
+                        }
+
+                    } else {
+                        log::warn!("[WebSocket] Client {} sent unknown JSON structure: {}", my_id, text);
+                        // Optional: Send error back to sender
+                        if let Some(sender) = clients.lock().await.get_mut(&my_id) {
+                           let error_msg = r#"{"status":"error","message":"Unknown message format"}"#;
+                           let _ = sender.send(Message::Text(error_msg.to_string())).await;
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::warn!("[WebSocket] Client {} sent invalid JSON: {}. Error: {}", my_id, text, e);
+                    // Optional: Send error back to sender
+                     if let Some(sender) = clients.lock().await.get_mut(&my_id) {
+                        let error_msg = r#"{"status":"error","message":"Invalid JSON"}"#;
+                        let _ = sender.send(Message::Text(error_msg.to_string())).await;
+                     }
+                }
+            }
+        }
+        Message::Binary(_) => {
+            log::info!("[WebSocket] Client {} sent binary message (unsupported)", my_id);
+            // Optional: Send error back to sender
+             if let Some(sender) = clients.lock().await.get_mut(&my_id) {
+                let error_msg = r#"{"status":"error","message":"Binary messages not supported"}"#;
+                let _ = sender.send(Message::Text(error_msg.to_string())).await;
+             }
+        }
+        Message::Ping(data) => {
+             log::info!("[WebSocket] Client {} sent ping", my_id);
+             if let Some(sender) = clients.lock().await.get_mut(&my_id) {
+                if sender.send(Message::Pong(data)).await.is_err() {
+                   log::error!("[WebSocket] Failed to send pong to client {}", my_id);
+                   // Consider this an error indicating client issues
+                }
+             }
+        }
+        Message::Pong(_) => {
+            // Pong received, client is alive - ignore
+        }
+        Message::Close(_) => {
+            // Close message handled by the main loop dropping the receiver stream
+            log::info!("[WebSocket] Received close frame from client {}", my_id);
+        }
+    }
 }
 
 fn main() {
@@ -305,12 +360,16 @@ fn main() {
             log::info!("Setting up application");
             let app_handle = app.handle().clone(); // Clone AppHandle for async tasks
 
+            // --- Initialize WebSocket Shared State ---
+            let clients_state: Clients = Arc::new(TokioMutex::new(HashMap::new()));
+
             // --- Start FEN Sync Server --- 
             tauri::async_runtime::spawn(async move {
                 let fen_sync_router = Router::new()
                     .route("/fen", post(handle_fen))
                     .route("/ws", axum::routing::get(websocket_handler)) // Use axum's built-in WebSocket handler
-                    .layer(Extension(app_handle.clone())); // Provide cloned AppHandle
+                    .layer(Extension(app_handle.clone())) // Provide cloned AppHandle
+                    .layer(Extension(clients_state.clone())); // Provide shared client state
 
                 let addr_str = "127.0.0.1:3030";
                 let addr: SocketAddr = match addr_str.parse() {
