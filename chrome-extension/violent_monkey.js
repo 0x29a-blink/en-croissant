@@ -66,26 +66,39 @@
     let currentAnalysis = {};
     let analysisOverlay = null;
     let labelContainer = null;
+    
+    // Visualization Constants
     const ARROW_COLORS = {
+        gradient: {
+            best: '#00AA00',      // Best move (green)
+            good: '#88AA00',      // Good move (yellow-green)
+            neutral: '#AAAA00',   // Neutral move (yellow)
+            inaccuracy: '#AA5500', // Inaccuracy (orange)
+            mistake: '#AA0000'    // Mistake (red)
+        },
         singleEngine: [
-            // Greyscale: Lightest for best, getting darker
-            '#AAAAAA', // Best move (light grey)
-            '#888888', // 2nd best 
-            '#666666', // 3rd best
-            '#444444', // 4th best
-            '#222222'  // 5th best (dark grey)
+            '#4CAF50', // Best move (green)
+            '#8BC34A', // 2nd best (light green)
+            '#CDDC39', // 3rd best (lime)
+            '#FFC107', // 4th best (amber)
+            '#FF9800'  // 5th best (orange)
         ],
         engines: {
-            // Default colors for common engines - can be expanded
             'stockfish': '#3692E7',  // blue
             'lc0': '#E736C5',        // pink
             'komodo': '#8DE736',     // green
-            'default': '#E7A336'     // orange (for any other engine)
+            'cfish': '#E7A336',      // orange
+            'lczero': '#E736C5',     // pink (same as lc0)
+            'dragon': '#E73636',     // red
+            'nnue': '#36E7E7',       // cyan
+            'default': '#9036E7'     // purple (for any other engine)
         }
     };
-    const ARROW_WIDTH = 15;
-    const ARROW_OPACITY = 0.8;
+    
+    const ARROW_WIDTH = 12; // Slightly thinner for a cleaner look
+    const ARROW_OPACITY = 0.85; // Slightly more transparent
     const SHOW_LABELS = true;
+    const SCORE_MAX_VALUE = 500; // Maximum score in centipawns for color gradient (5 pawns)
 
     // --- Initialization ---
 
@@ -1124,28 +1137,33 @@
 
         ws.onopen = () => {
             console.log('[WebSocket] Connection established.');
-            // Optionally send an initial message or identifier if your backend expects one
-            // ws.send(JSON.stringify({ type: 'hello', scriptId: 'universal_fen' }));
+            // Send an initial message to identify the client
+            ws.send(JSON.stringify({ 
+                type: 'client_connect', 
+                client: 'chesscom_extension',
+                version: '4.0'
+            }));
         };
 
         ws.onmessage = (event) => {
-             console.log('[WebSocket Raw] Message received:', event.data); // Keep raw log active
+            console.log('[WebSocket Raw] Message received:', event.data);
             try {
                 const data = JSON.parse(event.data);
 
-                // Check if the message contains the expected structure for visualization
-                 // Adapt this check based on the actual structure your backend sends
-                 if (data && data.finalShapes && Array.isArray(data.finalShapes)) { // Focus on finalShapes
-                     console.log('[WebSocket Parsed] Received finalShapes data:', data);
-                     currentAnalysis = data; // Store the latest analysis shapes
-                     renderEngineVisualization(currentAnalysis); // Render the arrows/shapes
-                 } else if (data && data.status === 'connected') {
-                      console.log('[WebSocket Parsed] Received connection status:', data);
-                 }
-                 // Add checks for other expected message types if needed
-                 else {
-                     console.log('[WebSocket Parsed] Received data does not appear to be expected analysis format:', data);
-                 }
+                // Process different message types
+                if (data.type === 'analysis') {
+                    // Standard analysis data format
+                    processAnalysisData(data);
+                } else if (data.finalShapes && Array.isArray(data.finalShapes)) {
+                    // Legacy format - direct shapes
+                    console.log('[WebSocket] Received legacy finalShapes data');
+                    currentAnalysis = data;
+                    renderEngineVisualization(currentAnalysis);
+                } else if (data.status === 'connected') {
+                    console.log('[WebSocket] Received connection confirmation:', data);
+                } else {
+                    console.log('[WebSocket] Received unrecognized data format:', data);
+                }
             } catch (error) {
                 console.error('[WebSocket] Failed to parse message data:', error, 'Raw data:', event.data);
             }
@@ -1153,14 +1171,92 @@
 
         ws.onerror = (error) => {
             console.error('[WebSocket] Error:', error);
-            // Consider adding more robust error handling or UI feedback
         };
 
         ws.onclose = (event) => {
             console.log(`[WebSocket] Connection closed. Code: ${event.code}, Reason: ${event.reason}`);
-            // Simple reconnect logic (optional)
-            // setTimeout(connectWebSocket, 5000); // Attempt to reconnect after 5 seconds
+            // Attempt to reconnect after 5 seconds
+            setTimeout(connectWebSocket, 5000);
         };
+    }
+
+    /**
+     * Process analysis data from the WebSocket
+     * @param {Object} data - Analysis data from backend
+     */
+    function processAnalysisData(data) {
+        console.log('[Analysis] Processing analysis data:', data);
+        
+        // Initialize the finalShapes array if not present
+        if (!data.finalShapes) {
+            data.finalShapes = [];
+        }
+        
+        // Process engine results
+        if (data.engines && Array.isArray(data.engines)) {
+            data.engines.forEach((engine, engineIndex) => {
+                if (!engine.moves || !Array.isArray(engine.moves)) return;
+                
+                // Get engine details
+                const engineId = engine.id || engineIndex;
+                const engineName = engine.name || `Engine ${engineId}`;
+                const engineColor = engine.color || getEngineColor(engineName, engineIndex);
+                
+                // Process each move from this engine
+                engine.moves.forEach((move, moveIndex) => {
+                    if (!move.from || !move.to) return;
+                    
+                    // Create shape for this move
+                    const shape = {
+                        from: move.from,
+                        to: move.to,
+                        color: move.color || engineColor,
+                        engineId: engineId,
+                        engineName: engineName,
+                        engineIndex: engineIndex,
+                        rank: moveIndex + 1,
+                        score: move.score || engine.score
+                    };
+                    
+                    // Add to finalShapes array
+                    data.finalShapes.push(shape);
+                });
+            });
+        }
+        
+        // Store complete analysis and render
+        currentAnalysis = data;
+        renderEngineVisualization(currentAnalysis);
+    }
+
+    /**
+     * Get color for a specific engine
+     * @param {string} engineName - Name of the engine
+     * @param {number} index - Index of the engine in the list
+     * @returns {string} Hex color code
+     */
+    function getEngineColor(engineName, index) {
+        const lowerName = (engineName || '').toLowerCase();
+        
+        // Check if we have a predefined color for this engine
+        if (ARROW_COLORS.engines[lowerName]) {
+            return ARROW_COLORS.engines[lowerName];
+        }
+        
+        // Use a predefined palette for multi-engine display
+        const enginePalette = [
+            '#3692E7',  // blue
+            '#E736C5',  // pink
+            '#8DE736',  // green
+            '#E7A336',  // orange
+            '#E73636',  // red
+            '#36E7E7',  // cyan
+            '#9036E7',  // purple
+            '#E7E736'   // yellow
+        ];
+        
+        // Return color from palette based on index
+        return enginePalette[index % enginePalette.length];
     }
 
     function createAnalysisOverlay() {
@@ -1299,71 +1395,91 @@
     }
 
      /**
-      * Creates an SVG path for an arrow.
+      * Creates an arrow path between two board coordinates
       * @param {object} fromCoords - Starting pixel coordinates {x, y} relative to board
       * @param {object} toCoords - Ending pixel coordinates {x, y} relative to board
       * @param {number} width - Arrow width
-      * @param {boolean} isKnight - True for L-shaped knight moves
       * @returns {string} SVG path definition
       */
-    function createArrowPath(fromCoords, toCoords, width, isKnight) {
-         // Implementation based on Chessground's arrow drawing logic
-         if (!fromCoords || !toCoords) return undefined; // Return undefined if coords are missing
+    function createArrowPath(fromCoords, toCoords, width) {
+        // Implementation based on Chessground's arrow drawing logic
+        if (!fromCoords || !toCoords) return undefined; // Return undefined if coords are missing
 
-         const dx = toCoords.x - fromCoords.x;
-         const dy = toCoords.y - fromCoords.y;
-         const len = Math.sqrt(dx * dx + dy * dy);
-         if (len < 0.01) return undefined; // Avoid division by zero for zero-length arrows
+        // Calculate base dimensions
+        const dx = toCoords.x - fromCoords.x;
+        const dy = toCoords.y - fromCoords.y;
+        const len = Math.sqrt(dx * dx + dy * dy);
+        if (len < 0.01) return undefined; // Avoid division by zero for zero-length arrows
 
-         // Dynamic adjustments based on arrow length maybe? (Keep simple for now)
-         const scaleFactor = 1.0; // Math.min(1.0, len / (width * 5)); // Example scaling down for very short arrows
+        // Regular move - straight arrow
+        const arrowWidth = width; // Full width for consistent look
+        const headLength = width * 2.2; // Slightly longer arrow head
+        const headWidth = width * 2.5; // Slightly wider arrow head
 
-         const arrowWidth = width * 0.75 * scaleFactor;
-         const headLength = width * 2 * scaleFactor;
-         const headWidth = width * 2 * scaleFactor;
+        // Normalize direction vector
+        const ndx = dx / len;
+        const ndy = dy / len;
 
-         // Adjust headLength slightly so the tip exactly reaches the target coordinate center
-         const effectiveHeadLength = Math.min(headLength, len - arrowWidth / 2); // Prevent head going past start for short arrows
+        // Perpendicular vector
+        const pdx = -ndy;
+        const pdy = ndx;
 
-         // Normalize direction vector
-         const ndx = dx / len;
-         const ndy = dy / len;
+        // Adjust start point to be slightly away from center for cleaner look
+        const adjustedStartX = fromCoords.x + ndx * (width * 0.25);
+        const adjustedStartY = fromCoords.y + ndy * (width * 0.25);
 
-         // Perpendicular vector
-         const pdx = -ndy;
-         const pdy = ndx;
+        // Slightly shorter than full length to prevent head going past center of target square
+        const effectiveLength = Math.max(0, len - (width * 0.75));
+        const shaftLength = effectiveLength - headLength;
 
-         // Point where head meets shaft (adjust back by effective head length)
-         const headBasePointX = toCoords.x - ndx * effectiveHeadLength;
-         const headBasePointY = toCoords.y - ndy * effectiveHeadLength;
+        // Points for the arrow shaft with adjusted start point
+        const shaftPoint1 = { 
+            x: adjustedStartX + pdx * arrowWidth / 2, 
+            y: adjustedStartY + pdy * arrowWidth / 2 
+        };
+        const shaftPoint2 = { 
+            x: adjustedStartX - pdx * arrowWidth / 2, 
+            y: adjustedStartY - pdy * arrowWidth / 2 
+        };
+        
+        // Point where head meets shaft
+        const headBaseX = adjustedStartX + ndx * shaftLength;
+        const headBaseY = adjustedStartY + ndy * shaftLength;
+        
+        const shaftPoint3 = { 
+            x: headBaseX - pdx * arrowWidth / 2, 
+            y: headBaseY - pdy * arrowWidth / 2 
+        };
+        const shaftPoint4 = { 
+            x: headBaseX + pdx * arrowWidth / 2, 
+            y: headBaseY + pdy * arrowWidth / 2 
+        };
 
-         // Points for the arrow shaft (rectangle) - Start slightly away from origin center? No, keep at center.
-         const shaftPoint1 = { x: fromCoords.x + pdx * arrowWidth / 2, y: fromCoords.y + pdy * arrowWidth / 2 };
-         const shaftPoint2 = { x: fromCoords.x - pdx * arrowWidth / 2, y: fromCoords.y - pdy * arrowWidth / 2 };
-         const shaftPoint3 = { x: headBasePointX - pdx * arrowWidth / 2, y: headBasePointY - pdy * arrowWidth / 2 };
-         const shaftPoint4 = { x: headBasePointX + pdx * arrowWidth / 2, y: headBasePointY + pdy * arrowWidth / 2 };
+        // Points for the arrowhead (triangle)
+        const headPoint1 = { x: toCoords.x, y: toCoords.y }; // Tip at target center
+        const headPoint2 = { 
+            x: headBaseX - pdx * headWidth / 2, 
+            y: headBaseY - pdy * headWidth / 2 
+        };
+        const headPoint3 = { 
+            x: headBaseX + pdx * headWidth / 2, 
+            y: headBaseY + pdy * headWidth / 2 
+        };
 
+        // SVG Path with smooth corners
+        const dp = 1; // Decimal places (1 is usually sufficient)
+        const path = [
+            `M ${shaftPoint1.x.toFixed(dp)} ${shaftPoint1.y.toFixed(dp)}`, // Start of shaft
+            `L ${shaftPoint4.x.toFixed(dp)} ${shaftPoint4.y.toFixed(dp)}`, // Top of shaft to head join
+            `L ${headPoint3.x.toFixed(dp)} ${headPoint3.y.toFixed(dp)}`,   // Arrow head side 1
+            `L ${headPoint1.x.toFixed(dp)} ${headPoint1.y.toFixed(dp)}`,   // Arrow tip
+            `L ${headPoint2.x.toFixed(dp)} ${headPoint2.y.toFixed(dp)}`,   // Arrow head side 2
+            `L ${shaftPoint3.x.toFixed(dp)} ${shaftPoint3.y.toFixed(dp)}`, // Bottom of shaft to head join
+            `L ${shaftPoint2.x.toFixed(dp)} ${shaftPoint2.y.toFixed(dp)}`, // Bottom of shaft
+            `Z` // Close path
+        ].join(' ');
 
-         // Points for the arrowhead (triangle)
-         const headPoint1 = { x: toCoords.x, y: toCoords.y }; // Tip of the arrow at target center
-         const headPoint2 = { x: headBasePointX - pdx * headWidth / 2, y: headBasePointY - pdy * headWidth / 2 };
-         const headPoint3 = { x: headBasePointX + pdx * headWidth / 2, y: headBasePointY + pdy * headWidth / 2 };
-
-         // SVG Path string (MoveTo, LineTo commands)
-         // Use fixed precision to avoid overly long path strings
-         const dp = 1; // Decimal places (1 is usually sufficient)
-         const path = [
-             `M ${shaftPoint1.x.toFixed(dp)} ${shaftPoint1.y.toFixed(dp)}`, // Move to start of shaft side 1
-             `L ${shaftPoint2.x.toFixed(dp)} ${shaftPoint2.y.toFixed(dp)}`, // Line to start of shaft side 2
-             `L ${shaftPoint3.x.toFixed(dp)} ${shaftPoint3.y.toFixed(dp)}`, // Line to end of shaft side 2 (before head base)
-             `L ${headPoint2.x.toFixed(dp)} ${headPoint2.y.toFixed(dp)}`,   // Line to arrowhead base side 2
-             `L ${headPoint1.x.toFixed(dp)} ${headPoint1.y.toFixed(dp)}`,   // Line to arrowhead tip
-             `L ${headPoint3.x.toFixed(dp)} ${headPoint3.y.toFixed(dp)}`,   // Line to arrowhead base side 1
-             `L ${shaftPoint4.x.toFixed(dp)} ${shaftPoint4.y.toFixed(dp)}`, // Line to end of shaft side 1 (before head base)
-             `Z` // Close path
-         ].join(' ');
-
-         return path;
+        return path;
     }
 
     /**
@@ -1376,17 +1492,15 @@
      * @param {number} rank - Move rank for labeling
      * @param {number} [score] - Optional evaluation score.
      * @param {number} [engineIndex] - Optional engine index.
+     * @param {number} [arrowLength] - Length of the arrow for z-index calculation
      */
-    function drawArrow(fromSquare, toSquare, fromCoords, toCoords, color, rank, score, engineIndex) {
+    function drawArrow(fromSquare, toSquare, fromCoords, toCoords, color, rank, score, engineIndex, arrowLength) {
          if (!analysisOverlay || !labelContainer || !fromCoords || !toCoords) {
               console.warn(`[Viz Draw] Cannot draw arrow ${fromSquare}->${toSquare}. Missing overlay, labelContainer, or coords.`, { analysisOverlay: !!analysisOverlay, labelContainer: !!labelContainer, fromCoords, toCoords });
               return;
          }
-         // console.log(`[Viz Draw DBG] Checking overlay elements. analysisOverlay valid? ${!!analysisOverlay?.parentElement}, labelContainer valid? ${!!labelContainer?.parentElement}`); // Reduce noise
 
-         const isKnight = isKnightMove(fromSquare, toSquare);
-         const arrowPathData = createArrowPath(fromCoords, toCoords, ARROW_WIDTH, isKnight);
-         // console.log(`[DEBUG Viz Draw] Arrow: ${fromSquare}->${toSquare}, Color: ${color}, PathData: ${arrowPathData}, FromCoords:`, fromCoords, 'ToCoords:', toCoords); // Reduce noise
+         const arrowPathData = createArrowPath(fromCoords, toCoords, ARROW_WIDTH);
 
          // Ensure path data is valid before creating element
          if (!arrowPathData) {
@@ -1397,53 +1511,117 @@
          const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
          path.setAttribute('d', arrowPathData);
          path.setAttribute('fill', color);
-         path.setAttribute('opacity', ARROW_OPACITY);
-         path.setAttribute('data-arrow-from', fromSquare); // Add data attributes for debugging/identification
+         
+         // Dynamic opacity based on rank - best moves are more opaque
+         const baseOpacity = ARROW_OPACITY;
+         const rankOpacity = baseOpacity * (1 - (rank - 1) * 0.1);
+         const finalOpacity = Math.max(0.4, Math.min(baseOpacity, rankOpacity));
+         
+         path.setAttribute('opacity', finalOpacity);
+         
+         // Add a subtle shadow effect for more depth
+         path.setAttribute('filter', 'drop-shadow(0px 1px 1px rgba(0,0,0,0.3))');
+         
+         // Set z-index based on arrow length - shorter arrows should appear on top
+         // We use the order attribute in SVG for this (higher values appear on top)
+         if (arrowLength) {
+             // Invert the length so shorter arrows get higher values
+             const zOrder = Math.floor((1000 / arrowLength) * 10);
+             path.setAttribute('data-z-order', zOrder);
+             path.style.zIndex = zOrder.toString();
+             
+             // Also use SVG's order attribute
+             path.setAttribute('style', `order: ${zOrder};`);
+         }
+         
+         // Add data attributes for debugging/identification
+         path.setAttribute('data-arrow-from', fromSquare);
          path.setAttribute('data-arrow-to', toSquare);
+         path.setAttribute('data-engine-index', engineIndex || 0);
+         path.setAttribute('data-rank', rank);
+         if (score !== undefined) {
+            path.setAttribute('data-score', score);
+         }
+         
          analysisOverlay.appendChild(path);
 
          // Add label
          if (SHOW_LABELS) {
             const label = document.createElement('div');
-             label.style.position = 'absolute';
-             // Position label closer to the arrow tip
-             const labelOffsetRatio = 0.85; // Place label 85% along the arrow vector from start
-             const labelX = fromCoords.x + (toCoords.x - fromCoords.x) * labelOffsetRatio;
-             const labelY = fromCoords.y + (toCoords.y - fromCoords.y) * labelOffsetRatio;
-             label.style.left = `${labelX.toFixed(1)}px`;
-             label.style.top = `${labelY.toFixed(1)}px`;
-             label.style.transform = 'translate(-50%, -50%)'; // Center label on point
-             label.style.color = 'black'; // Contrasting border/text shadow would be better
-             label.style.textShadow = '0 0 2px white, 0 0 2px white, 0 0 2px white'; // Simple white outline
-             label.style.backgroundColor = `${color}AA`; // Use arrow color with some transparency
-             label.style.padding = '0px 2px'; // Smaller padding
-             label.style.borderRadius = '2px'; // Smaller radius
-             label.style.fontSize = '9px'; // Smaller font
-             label.style.fontWeight = 'bold';
-             label.style.pointerEvents = 'none';
-             label.style.zIndex = '10'; // Ensure labels are above arrows
-             label.textContent = `${rank}`; // Display rank
-             // Score display might be less useful with direct shapes, keep simple
-             // if (score !== undefined) {
-             //     label.textContent += ` (${formatScore(score)})`;
-             // }
-             label.setAttribute('data-label-for', `${fromSquare}-${toSquare}`); // Link label to arrow
+            label.style.position = 'absolute';
+            
+            // Position label - use a standardized approach regardless of move type
+            // Use engineIndex or rank to vary the position to avoid label overlap
+            const positionOffset = engineIndex ? (engineIndex * 0.15) : 0;
+            const basePosition = 0.6 + positionOffset; // Start at 60% along the arrow and adjust based on index
+            const labelOffsetRatio = Math.min(0.85, Math.max(0.3, basePosition)); // Keep between 30% and 85%
+            
+            const labelX = fromCoords.x + (toCoords.x - fromCoords.x) * labelOffsetRatio;
+            const labelY = fromCoords.y + (toCoords.y - fromCoords.y) * labelOffsetRatio;
+            
+            // Add slight random offset to further prevent overlaps
+            const randomOffsetX = (Math.random() - 0.5) * ARROW_WIDTH * 0.4;
+            const randomOffsetY = (Math.random() - 0.5) * ARROW_WIDTH * 0.4;
+            
+            label.style.left = `${labelX.toFixed(1)}px`;
+            label.style.top = `${labelY.toFixed(1)}px`;
+            label.style.transform = 'translate(-50%, -50%)'; // Center label on point
+            
+            // Determine label color based on score
+            let labelBgColor;
+            
+            if (score !== undefined) {
+                // Use gradient color based on score
+                labelBgColor = getScoreGradientColor(score, SCORE_MAX_VALUE);
+            } else {
+                // Use the arrow color if no score
+                labelBgColor = color;
+            }
+            
+            // Modern styling for the label
+            label.style.color = '#FFFFFF';
+            label.style.textShadow = '0px 1px 2px rgba(0,0,0,0.8)';
+            label.style.backgroundColor = labelBgColor;
+            label.style.padding = '2px 4px';
+            label.style.borderRadius = '3px';
+            label.style.fontSize = '10px';
+            label.style.fontWeight = 'bold';
+            label.style.fontFamily = 'Arial, sans-serif';
+            label.style.pointerEvents = 'none';
+            
+            // Set the z-index to match the arrow's z-index if available
+            if (arrowLength) {
+                const zOrder = Math.floor((1000 / arrowLength) * 10);
+                label.style.zIndex = (zOrder + 100).toString(); // Labels should be above arrows
+            } else {
+                label.style.zIndex = (100 - rank).toString(); // Legacy z-index
+            }
+            
+            label.style.boxShadow = `0 0 3px #FFFFFF, 0 0 2px #FFFFFF, 0px 1px 3px rgba(0,0,0,0.3)`;
+            
+            // Content - include score if available
+            if (score !== undefined) {
+                label.textContent = `${rank} (${formatScore(score)})`;
+            } else {
+                label.textContent = `${rank}`;
+            }
+            
+            label.setAttribute('data-label-for', `${fromSquare}-${toSquare}`);
+            label.setAttribute('data-engine-index', engineIndex || 0);
             labelContainer.appendChild(label);
          }
     }
 
-
     /**
      * Renders engine visualization data as SVG overlays
-     * @param {Object} visualization - The complete engine visualization data from WebSocket, expected to have a `finalShapes` property.
+     * @param {Object} visualization - The complete engine visualization data from WebSocket
      */
     function renderEngineVisualization(visualization) {
-        // console.log('[Viz Render] Received visualization data:', JSON.stringify(visualization)); // Reduce noise
-
         if (!boardInfo.boardElement) {
             console.warn("[Viz Render] Board element not found, cannot render.");
             return;
         }
+        
         if (!visualization || !visualization.finalShapes || !Array.isArray(visualization.finalShapes)) {
             console.warn("[Viz Render] Invalid or missing finalShapes data in visualization object:", visualization);
             clearAnalysisVisuals(); // Clear old visuals if data is bad
@@ -1453,73 +1631,154 @@
         createAnalysisOverlay(); // Ensure overlay exists and is positioned correctly
         clearAnalysisVisuals(); // Clear previous visuals
 
-        const { finalShapes } = visualization; // Directly use finalShapes
-        const { playingAsBlack } = determinePlayerColor(); // Needed for coordinate mapping
-        console.log(`[Viz Render DRAWING] Using playingAsBlack=${playingAsBlack} for coordinate calculations.`);
-
-        if (finalShapes.length === 0) {
-             console.log("[Viz Render] No shapes received to draw.");
-            return; // Nothing to draw
-        }
-
-        console.log(`[Viz Render] Processing ${finalShapes.length} shapes received.`);
-        // console.log(`[Viz Render DBG] First shape raw data:`, JSON.stringify(finalShapes[0])); // Reduce noise
-
-        // Process shapes directly: Calculate coordinates and prepare for drawing
-        const processedShapes = finalShapes.map((shape, index) => {
-            // Minimal validation
-            if (!shape.from || !shape.to || !shape.color) {
-                console.warn(`[Viz Render] Skipping invalid shape at index ${index}:`, shape);
-                return null;
+        const { finalShapes } = visualization;
+        const engines = {}; // Group shapes by engine
+        
+        // Group shapes by engine and extract scores if available
+        finalShapes.forEach((shape, index) => {
+            // Default engine is 0 if not specified
+            const engineId = shape.engineId || shape.engineIndex || 0;
+            const engineName = shape.engineName || `Engine ${engineId}`;
+            
+            if (!engines[engineId]) {
+                engines[engineId] = {
+                    name: engineName,
+                    shapes: [],
+                    color: ARROW_COLORS.engines[engineName.toLowerCase()] || 
+                           ARROW_COLORS.engines.default
+                };
             }
-             // console.log(`[Viz Render DBG Shape ${index+1}] Calculating coords for ${shape.from}->${shape.to} using playingAsBlack=${playingAsBlack}`); // Reduce noise
-            const fromCoords = getSquareCoordinates(shape.from, playingAsBlack);
-            const toCoords = getSquareCoordinates(shape.to, playingAsBlack);
-             // console.log(`[Viz Render DBG Shape ${index+1}] Result Coords: from=${JSON.stringify(fromCoords)}, to=${JSON.stringify(toCoords)}`); // Reduce noise
+            
+            // Add the shape to this engine's collection
+            engines[engineId].shapes.push({
+                ...shape,
+                rank: shape.rank || index + 1,
+                score: shape.score, // May be undefined - that's okay
+                engineIndex: engineId
+            });
+        });
 
-
-            if (!fromCoords || !toCoords) {
-                console.warn(`[Viz Render] Skipping shape due to invalid coords: From: ${shape.from} (${JSON.stringify(fromCoords)}), To: ${shape.to} (${JSON.stringify(toCoords)})`);
-                return null;
+        const { playingAsBlack } = determinePlayerColor();
+        console.log(`[Viz Render] Using playingAsBlack=${playingAsBlack} for coordinate calculations.`);
+        
+        // Create predefined gradient colors based on ARROW_COLORS.singleEngine
+        const generateGradientColor = (index, totalMoves) => {
+            // Always calculate a dynamic color on a gradient from green to red
+            // Ensure we span the full range regardless of how many moves
+            
+            // Convert index to a position on a 0-1 scale
+            // If only 1 move, it's the best by default (position 0 = green)
+            // Otherwise distribute evenly from 0 to 1
+            const position = totalMoves <= 1 ? 0 : index / (Math.max(totalMoves - 1, 1));
+            
+            // RGB values for gradient: green(0,255,0) → yellow(255,255,0) → red(255,0,0)
+            let r, g;
+            if (position < 0.5) {
+                // Green to yellow (0.0 to 0.5)
+                r = Math.round(255 * position * 2);
+                g = 255;
+            } else {
+                // Yellow to red (0.5 to 1.0)
+                r = 255;
+                g = Math.round(255 * (1 - (position - 0.5) * 2));
             }
-
-            return {
-                ...shape, // Include original properties like color, lineWidth
-                fromCoords: fromCoords,
-                toCoords: toCoords,
-                rank: index + 1, // Simple ranking based on order received
-                engineIndex: 0 // Placeholder if needed
+            
+            // Add blue component for more vibrant colors (optional)
+            const b = 0;
+            
+            // Format as hex
+            const toHex = c => {
+                const hex = c.toString(16);
+                return hex.length === 1 ? '0' + hex : hex;
             };
-        }).filter(shape => shape !== null); // Remove nulls from invalid shapes
-        // console.log('[Viz Render] Processed shapes:', JSON.stringify(processedShapes)); // Reduce noise
+            
+            console.log(`[Color] Move ${index+1}/${totalMoves}: position=${position.toFixed(2)}, color=#${toHex(r)}${toHex(g)}${toHex(b)}`);
+            
+            return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+        };
+        
+        // Process each engine's shapes
+        let totalProcessedShapes = [];
+        Object.values(engines).forEach((engine, engineIndex) => {
+            // Sort moves by rank
+            engine.shapes.sort((a, b) => a.rank - b.rank);
+            
+            // Process shapes for this engine
+            const processedShapes = engine.shapes.map((shape, idx) => {
+                if (!shape.from || !shape.to) {
+                    console.warn(`[Viz Render] Skipping invalid shape from ${engine.name}:`, shape);
+                    return null;
+                }
+                
+                const fromCoords = getSquareCoordinates(shape.from, playingAsBlack);
+                const toCoords = getSquareCoordinates(shape.to, playingAsBlack);
 
-        if (processedShapes.length === 0) {
+                if (!fromCoords || !toCoords) {
+                    console.warn(`[Viz Render] Skipping shape due to invalid coords: From: ${shape.from}, To: ${shape.to}`);
+                    return null;
+                }
+
+                // Always use the gradient color based on rank within this engine
+                const color = generateGradientColor(idx, engine.shapes.length);
+                
+                return {
+                    ...shape,
+                    fromCoords,
+                    toCoords,
+                    color,
+                    engineIndex,
+                    moveSequence: idx,  // Store the move sequence for this engine
+                    moveKey: `${shape.from}-${shape.to}` // Key to identify same moves
+                };
+            }).filter(shape => shape !== null);
+            
+            // Add to the total collection
+            totalProcessedShapes = totalProcessedShapes.concat(processedShapes);
+        });
+
+        if (totalProcessedShapes.length === 0) {
             console.warn("[Viz Render] No valid shapes to draw after processing.");
             return;
         }
 
-        // --- Optional: Arrow Offsetting (Adapted for direct shapes) ---
-        // Group processed shapes by destination and origin for offsetting
+        // Calculate arrow lengths and sort by length (shorter on top)
+        totalProcessedShapes.forEach(shape => {
+            // Calculate the actual arrow length
+            const dx = shape.toCoords.x - shape.fromCoords.x;
+            const dy = shape.toCoords.y - shape.fromCoords.y;
+            shape.arrowLength = Math.sqrt(dx * dx + dy * dy);
+        });
+        
+        // Sort the shapes - process longer arrows first (they'll be drawn first and appear on bottom)
+        totalProcessedShapes.sort((a, b) => b.arrowLength - a.arrowLength);
+
+        // Group arrows by destination and origin for additional offsetting when needed
         const shapesByDestination = {};
         const shapesByOrigin = {};
-        processedShapes.forEach(shape => {
+        
+        totalProcessedShapes.forEach(shape => {
+            // Create keys that include engineIndex to separate by engine
+            const destKey = `${shape.to}-${shape.engineIndex}`;
+            const originKey = `${shape.from}-${shape.engineIndex}`;
+            
             // Group by destination
-            if (!shapesByDestination[shape.to]) shapesByDestination[shape.to] = [];
-            shapesByDestination[shape.to].push(shape);
+            if (!shapesByDestination[destKey]) shapesByDestination[destKey] = [];
+            shapesByDestination[destKey].push(shape);
+            
             // Group by origin
-            if (!shapesByOrigin[shape.from]) shapesByOrigin[shape.from] = [];
-            shapesByOrigin[shape.from].push(shape);
+            if (!shapesByOrigin[originKey]) shapesByOrigin[originKey] = [];
+            shapesByOrigin[originKey].push(shape);
         });
 
-        // Apply offsets (reuse existing offset logic if applicable)
-        const DEST_OFFSET_DISTANCE = ARROW_WIDTH * 0.6;
+        // Apply destination offsets (for arrows going to the same square)
+        const DEST_OFFSET_DISTANCE = ARROW_WIDTH * 0.8;
         Object.values(shapesByDestination).forEach(shapeGroup => {
-             if (shapeGroup.length > 1) {
-                const angleStep = (Math.PI / 2) / (shapeGroup.length -1); // Spread over 90 degrees
-                const baseAngle = -(Math.PI / 4); // Start from -45 degrees
-                shapeGroup.sort((a, b) => a.rank - b.rank); // Offset based on rank/order
+            if (shapeGroup.length > 1) {
+                const angleStep = (Math.PI / 2) / (shapeGroup.length - 1);
+                const baseAngle = -(Math.PI / 4);
+                // Sort by rank
+                shapeGroup.sort((a, b) => a.rank - b.rank);
                 shapeGroup.forEach((shape, idx) => {
-                    // Don't offset the first arrow (best move)? Or apply to all? Apply to all for consistency.
                     const angle = baseAngle + idx * angleStep;
                     shape.toCoords.x += Math.cos(angle) * DEST_OFFSET_DISTANCE;
                     shape.toCoords.y += Math.sin(angle) * DEST_OFFSET_DISTANCE;
@@ -1527,11 +1786,13 @@
             }
         });
 
-        const ORIGIN_OFFSET_DISTANCE = ARROW_WIDTH * 0.3;
-         Object.values(shapesByOrigin).forEach(shapeGroup => {
+        // Apply origin offsets (for arrows coming from the same square)
+        const ORIGIN_OFFSET_DISTANCE = ARROW_WIDTH * 0.5;
+        Object.values(shapesByOrigin).forEach(shapeGroup => {
             if (shapeGroup.length > 1) {
-                const angleStep = (Math.PI / 2) / (shapeGroup.length -1);
+                const angleStep = (Math.PI / 2) / (shapeGroup.length - 1);
                 const baseAngle = -(Math.PI / 4);
+                // Sort by rank
                 shapeGroup.sort((a, b) => a.rank - b.rank);
                 shapeGroup.forEach((shape, idx) => {
                     const angle = baseAngle + idx * angleStep;
@@ -1540,58 +1801,104 @@
                 });
             }
         });
-        // --- End Optional Offsetting ---
 
-        // --- Draw Arrows ---
-        // console.log(`[Viz Render] Drawing ${processedShapes.length} arrows... Checking overlay elements: analysisOverlay valid? ${!!analysisOverlay?.parentElement}, labelContainer valid? ${!!labelContainer?.parentElement}`); // Reduce noise
-        processedShapes.forEach(shape => {
-             // Use shape properties directly.
-             drawArrow(
+        // Draw all arrows - already sorted by length
+        totalProcessedShapes.forEach(shape => {
+            drawArrow(
                 shape.from,
                 shape.to,
                 shape.fromCoords,
                 shape.toCoords,
                 shape.color,
-                shape.rank, // Use derived rank
-                undefined, // Score might not be available, pass undefined
-                shape.engineIndex // Use derived index
+                shape.rank,
+                shape.score,
+                shape.engineIndex,
+                shape.arrowLength // Pass arrow length for z-index
             );
         });
 
         console.log("[Viz Render] Arrow drawing complete.");
     }
 
-    // --- Utility Functions (isKnightMove, formatScore, getScoreGradientColor) ---
     /**
-     * Checks if a move is a knight move based on square distance.
-     * @param {string} fromSq - e.g., "g1"
-     * @param {string} toSq - e.g., "f3"
-     * @returns {boolean}
+     * Formats a score for display
+     * @param {number|string} score - Engine score (centipawns or mate)
+     * @returns {string} Formatted score
      */
-    function isKnightMove(fromSq, toSq) {
-        if (!fromSq || !toSq || fromSq.length !== 2 || toSq.length !== 2) return false;
-        const f1 = fromSq.charCodeAt(0) - 'a'.charCodeAt(0);
-        const r1 = parseInt(fromSq[1], 10) - 1;
-        const f2 = toSq.charCodeAt(0) - 'a'.charCodeAt(0);
-        const r2 = parseInt(toSq[1], 10) - 1;
-
-        const dx = Math.abs(f1 - f2);
-        const dy = Math.abs(r1 - r2);
-
-        return (dx === 1 && dy === 2) || (dx === 2 && dy === 1);
-    }
-
     function formatScore(score) {
+        if (score === undefined || score === null) return '?';
+        
+        // Handle mate scores (e.g., "M5" or "#5")
+        if (typeof score === 'string') {
+            // Look for mate score patterns
+            if (score.startsWith('M') || score.startsWith('#')) {
+                return score;
+            }
+            // Try to parse as number
+            const numVal = parseFloat(score);
+            if (!isNaN(numVal)) {
+                return (numVal / 100).toFixed(2);
+            }
+            return score; // Return as is if can't parse
+        }
+        
+        // Handle mate scores as numbers (negative for black wins, positive for white wins)
         if (typeof score === 'number') {
-            return (score / 100).toFixed(2); // Assuming score is in centipawns
+            if (score > 9000) return `#${Math.ceil((10000 - score) / 100)}`;
+            if (score < -9000) return `#-${Math.ceil((10000 + score) / 100)}`;
+            return (score / 100).toFixed(2); // Convert centipawns to pawns
         }
-        // Handle mate scores (e.g., M2, M-3)
-        if (typeof score === 'string' && score.startsWith('M')) {
-             return score;
-        }
+        
         return '?';
     }
 
+    /**
+     * Generates a color along a green-yellow-red gradient based on score
+     * @param {number} score - Evaluation score in centipawns
+     * @param {number} maxScore - Maximum expected score (default 500 centipawns = 5 pawns)
+     * @returns {string} Hex color code
+     */
+    function getScoreGradientColor(score, maxScore = 500) {
+        if (score === undefined || score === null) return '#AAAAAA'; // Gray for unknown scores
+        
+        // Parse string scores if needed
+        if (typeof score === 'string') {
+            // Handle mate scores
+            if (score.startsWith('M') || score.startsWith('#')) {
+                return '#00FF00'; // Bright green for mate
+            }
+            // Try to parse as number
+            score = parseFloat(score);
+            if (isNaN(score)) return '#AAAAAA'; // Gray for unparseable
+        }
+        
+        // Handle mate scores as numbers
+        if (score > 9000 || score < -9000) return '#00FF00'; // Green for mate
+        
+        // Normalize score to 0-1 range, clamping at maxScore
+        const normalizedScore = Math.max(0, Math.min(1, 1 - Math.abs(score) / maxScore));
+        
+        // Generate RGB color - green to yellow to red
+        let r, g, b = 0;
+        
+        if (normalizedScore > 0.5) {
+            // Green to yellow (normalizedScore: 1.0 to 0.5)
+            r = Math.round(255 * (1 - normalizedScore) * 2);
+            g = 255;
+        } else {
+            // Yellow to red (normalizedScore: 0.5 to 0.0)
+            r = 255;
+            g = Math.round(255 * normalizedScore * 2);
+        }
+        
+        // Convert to hex
+        const toHex = (c) => {
+            const hex = c.toString(16);
+            return hex.length === 1 ? '0' + hex : hex;
+        };
+        
+        return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+    }
 
     // --- Script Execution ---
     // Delay initialization slightly to ensure page elements (especially web components) are ready
