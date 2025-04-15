@@ -225,15 +225,196 @@ function Board({
   const wsRef = useRef<WebSocket | null>(null);
   
   useEffect(() => {
-    wsRef.current = new WebSocket('ws://localhost:3030/ws');
+    const connectWebSocket = () => {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          console.log("[Board WS] Already connected.");
+          return; // Already connected
+      }
+      
+      console.log("[Board WS] Attempting to connect...");
+      wsRef.current = new WebSocket('ws://localhost:3030/ws');
+
+      wsRef.current.onopen = () => {
+          console.log("[Board WS] Connection established.");
+      };
+
+      wsRef.current.onmessage = (event) => {
+          try {
+              const response = JSON.parse(event.data);
+              console.log('[Board WS] Received response from server:', response);
+              if (response.status === 'received') {
+                  console.log('[Board WS] Server confirmed receipt of visualization data');
+              }
+          } catch (e) {
+              console.error('[Board WS] Failed to parse server response:', e);
+          }
+      };
+
+      wsRef.current.onerror = (error) => {
+          console.error("[Board WS] Error:", error);
+          wsRef.current = null; // Clear ref on error
+          // Optional: Retry connection after a delay
+          // setTimeout(connectWebSocket, 5000);
+      };
+
+      wsRef.current.onclose = (event) => {
+          console.log(`[Board WS] Connection closed. Code: ${event.code}, Reason: ${event.reason}`);
+          wsRef.current = null; // Clear ref on close
+          // Optional: Retry connection if needed and not intentional close
+          // if (!event.wasClean) { setTimeout(connectWebSocket, 5000); }
+      };
+    };
     
+    connectWebSocket(); // Initial connection attempt
+    
+    // Cleanup function: close WebSocket on component unmount
     return () => {
       if (wsRef.current) {
+        console.log("[Board WS] Closing WebSocket connection.");
         wsRef.current.close();
+        wsRef.current = null;
       }
     };
-  }, []);
+  }, []); // Empty dependency array: run only on mount and unmount
 
+  // useEffect hook to calculate shapes and send them when dependencies change and WS is ready
+  useEffect(() => {
+    // --- Start Shape Calculation ---
+    let calculatedShapes: DrawShape[] = [];
+    if (showArrows && evalOpen && arrows.size > 0 && pos) {
+        const engineLines: Record<number, { /* ... type definitions ... */ }> = {}; // Keep type defs if needed
+        const entries = Array.from(arrows.entries()).sort((a, b) => a[0] - b[0]);
+
+        for (const [i, moves] of entries) {
+            if (i < 4 && moves.length > 0) { // Check if moves array exists and is not empty
+                const bestWinChance = moves[0].winChance;
+                // engineLines[i] = { ... }; // Populate if needed elsewhere
+
+                for (const [j, { pv, winChance }] of moves.entries()) {
+                    const posClone = pos.clone();
+                    let prevSquare = null;
+                    for (const [ii, uci] of pv.entries()) {
+                        const m = parseUci(uci)! as NormalMove;
+                        if (!m) continue; // Skip if uci is invalid
+
+                        const from = makeSquare(m.from)!;
+                        const to = makeSquare(m.to)!;
+                         if (!from || !to) continue; // Skip if squares are invalid
+                         
+                        // Check if move is legal before proceeding (optional but safer)
+                        // if (!posClone.isLegal(m)) break; 
+                        posClone.play(m);
+
+                        if (prevSquare === null) {
+                            prevSquare = from;
+                        }
+                        const brushSize = match(bestWinChance - winChance)
+                            .when(d => d < 2.5, () => LARGE_BRUSH)
+                            .when(d => d < 5, () => MEDIUM_BRUSH)
+                            .otherwise(() => SMALL_BRUSH);
+
+                        if (ii === 0 || (showConsecutiveArrows && j === 0 && ii % 2 === 0)) {
+                            if (ii < 5 && !calculatedShapes.find((s) => s.orig === from && s.dest === to) && prevSquare === from) {
+                                const arrowColor = j === 0 ? arrowColors[i]?.strong : arrowColors[i]?.pale;
+                                if (arrowColor) { // Ensure color is defined
+                                     calculatedShapes.push({
+                                        orig: from,
+                                        dest: to,
+                                        brush: arrowColor,
+                                        modifiers: { lineWidth: brushSize },
+                                    });
+                                }
+                                prevSquare = to;
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (currentNode.shapes.length > 0) {
+        // Filter out potential duplicates if necessary, though concat is usually fine
+        calculatedShapes = calculatedShapes.concat(currentNode.shapes);
+    }
+    // --- End Shape Calculation ---
+
+    // Map calculatedShapes to the format expected by the extension
+    const finalShapesForExtension = calculatedShapes.map(shape => ({
+        from: shape.orig,
+        to: shape.dest,
+        color: shape.brush,
+        lineWidth: shape.modifiers?.lineWidth,
+    }));
+
+    // Send shapes if WS is ready and there are shapes to send
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        if (finalShapesForExtension.length > 0) { 
+            console.log('[Board WS] Sending finalShapes data:', { finalShapes: finalShapesForExtension });
+            try {
+                wsRef.current.send(JSON.stringify({ finalShapes: finalShapesForExtension }));
+            } catch (e) {
+                 console.error("[Board WS] Error sending message:", e);
+            }
+        } else {
+            // Optional: Send clear command only if shape state transitions from having shapes to none
+            // console.log('[Board WS] No shapes to send.');
+        }
+    } else if (calculatedShapes.length > 0) { // Log warning only if we intended to send something
+       console.warn("[Board WS] WebSocket not connected, cannot send shapes.");
+    }
+
+  // Dependencies: Recalculate and send when any of these change.
+  // Note: `pos` itself is an object, might cause re-renders if not memoized upstream.
+  // currentNode.fen change implies pos change.
+  // Using JSON.stringify for arrays/objects in dependencies can be inefficient but ensures deep comparison.
+  }, [showArrows, evalOpen, arrows, currentNode.fen, JSON.stringify(currentNode.shapes), wsRef.current?.readyState]);
+  
+  // Use useMemo to calculate shapes for display based on dependencies
+  const displayShapes = useMemo(() => {
+    let shapes: DrawShape[] = [];
+    if (showArrows && evalOpen && arrows.size > 0 && pos) {
+      const entries = Array.from(arrows.entries()).sort((a, b) => a[0] - b[0]);
+      for (const [i, arrMoves] of entries) {
+        if (i < 4 && arrMoves.length > 0) {
+          const bestWinChance = arrMoves[0].winChance;
+          for (const [j, { pv, winChance }] of arrMoves.entries()) {
+            if (pv.length > 0) {
+              const m = parseUci(pv[0]);
+              // Type guard for NormalMove
+              if (m && 'from' in m) { 
+                const from = makeSquare(m.from)!;
+                const to = makeSquare(m.to)!;
+                if (from && to && !shapes.find((s) => s.orig === from && s.dest === to)) {
+                  const brushSize = match(bestWinChance - winChance)
+                    .when(d => d < 2.5, () => LARGE_BRUSH)
+                    .when(d => d < 5, () => MEDIUM_BRUSH)
+                    .otherwise(() => SMALL_BRUSH);
+                  const arrowColor = j === 0 ? arrowColors[i]?.strong : arrowColors[i]?.pale;
+                  if (arrowColor) {
+                    shapes.push({ orig: from, dest: to, brush: arrowColor, modifiers: { lineWidth: brushSize } });
+                  }
+                }
+              }
+            }
+            // Add logic for consecutive arrows if needed
+            // if (j === 0 && showConsecutiveArrows && pv.length > 1) { ... }
+          }
+        }
+      }
+    }
+    // Always include shapes manually added to the current node
+    shapes = shapes.concat(currentNode.shapes);
+    return shapes;
+    // Dependencies for useMemo should match those used in the calculation
+  }, [showArrows, evalOpen, arrows, pos, currentNode.shapes, showConsecutiveArrows]);
+
+  // Log displayShapes for debugging application-side arrows
+  console.log("[Board] Calculated displayShapes:", displayShapes);
+
+  // Separate useEffect for makeMove to avoid dependency cycle issues if needed
   async function makeMove(move: NormalMove) {
     if (!pos) return;
     const san = makeSan(pos, move);
@@ -272,162 +453,6 @@ function Board({
       });
       setPendingMove(null);
     }
-  }
-
-  let shapes: DrawShape[] = [];
-  if (showArrows && evalOpen && arrows.size > 0 && pos) {
-    const engineLines: Record<number, {
-      engineIndex: number,
-      bestWinChance: number,
-      variations: Array<{
-        variationIndex: number,
-        winChance: number,
-        arrows: Array<{
-          from: string,
-          to: string,
-          color: string,
-          lineWidth: number,
-          isMainLine: boolean,
-          moveNumber: number
-        }>
-      }>
-    }> = {};
-
-    const entries = Array.from(arrows.entries()).sort((a, b) => a[0] - b[0]);
-    for (const [i, moves] of entries) {
-      if (i < 4) {
-        const bestWinChance = moves[0].winChance;
-        engineLines[i] = {
-          engineIndex: i,
-          bestWinChance,
-          variations: []
-        };
-
-        for (const [j, { pv, winChance }] of moves.entries()) {
-          const variation = {
-            variationIndex: j,
-            winChance,
-            arrows: [] as Array<{
-              from: string,
-              to: string,
-              color: string,
-              lineWidth: number,
-              isMainLine: boolean,
-              moveNumber: number
-            }>
-          };
-
-          const posClone = pos.clone();
-          let prevSquare = null;
-          for (const [ii, uci] of pv.entries()) {
-            const m = parseUci(uci)! as NormalMove;
-
-            posClone.play(m);
-            const from = makeSquare(m.from)!;
-            const to = makeSquare(m.to)!;
-            if (prevSquare === null) {
-              prevSquare = from;
-            }
-            const brushSize = match(bestWinChance - winChance)
-              .when(
-                (d) => d < 2.5,
-                () => LARGE_BRUSH,
-              )
-              .when(
-                (d) => d < 5,
-                () => MEDIUM_BRUSH,
-              )
-              .otherwise(() => SMALL_BRUSH);
-
-            if (
-              ii === 0 ||
-              (showConsecutiveArrows && j === 0 && ii % 2 === 0)
-            ) {
-              if (
-                ii < 5 && // max 3 arrows
-                !shapes.find((s) => s.orig === from && s.dest === to) &&
-                prevSquare === from
-              ) {
-                const arrowColor = j === 0 ? arrowColors[i].strong : arrowColors[i].pale;
-                
-                variation.arrows.push({
-                  from,
-                  to,
-                  color: arrowColor,
-                  lineWidth: brushSize,
-                  isMainLine: j === 0,
-                  moveNumber: ii
-                });
-
-                shapes.push({
-                  orig: from,
-                  dest: to,
-                  brush: arrowColor,
-                  modifiers: {
-                    lineWidth: brushSize,
-                  },
-                });
-                prevSquare = to;
-              } else {
-                break;
-              }
-            }
-          }
-          
-          engineLines[i].variations.push(variation);
-        }
-      }
-    }
-
-    console.log('Complete engine analysis visualization:', {
-      totalEngines: arrows.size,
-      enabledEngines: Object.keys(engineLines).length,
-      engineLines,
-      finalShapes: shapes.map(shape => ({
-        from: shape.orig,
-        to: shape.dest,
-        color: shape.brush,
-        lineWidth: shape.modifiers?.lineWidth
-      }))
-    });
-
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      // Log the data we're about to send
-      console.log('[Board] Sending engine visualization data:', {
-        engineId: "board_visualization",
-        analysis: shapes.map(shape => ({
-          move: `${shape.orig}-${shape.dest}`,
-          score: engineLines[0]?.variations[0]?.winChance || 0,
-          rank: shapes.indexOf(shape) + 1
-        }))
-      });
-
-      wsRef.current.send(JSON.stringify({
-        engineId: "board_visualization",
-        analysis: shapes.map(shape => ({
-          move: `${shape.orig}-${shape.dest}`,
-          score: engineLines[0]?.variations[0]?.winChance || 0,
-          rank: shapes.indexOf(shape) + 1
-        }))
-      }));
-
-      // Add message confirmation handler
-      wsRef.current.onmessage = (event) => {
-        try {
-          const response = JSON.parse(event.data);
-          console.log('[Board] Received response from server:', response);
-          if (response.status === 'received') {
-            console.log('[Board] Server confirmed receipt of visualization data');
-          }
-        } catch (e) {
-          console.error('[Board] Failed to parse server response:', e);
-        }
-      };
-    }
-  }
-
-  if (currentNode.shapes.length > 0) {
-    shapes = shapes.concat(currentNode.shapes);
   }
 
   const hasClock =
@@ -819,9 +844,17 @@ function Board({
                   enabled: true,
                   visible: true,
                   defaultSnapToValidMove: snapArrows,
-                  autoShapes: shapes,
-                  onChange: (shapes) => {
-                    setShapes(shapes);
+                  autoShapes: displayShapes, // Use the memoized shapes
+                  onChange: (shapes: DrawShape[]) => {
+                    // Filter out engine-generated arrows before saving user drawings
+                    const userDrawnShapes = shapes.filter((shape: DrawShape) => {
+                      // Example filter: Check if brush color is NOT one of the engine colors
+                      return !Object.values(arrowColors).some(palette => 
+                        (palette.strong === shape.brush || palette.pale === shape.brush)
+                      );
+                    });
+                    // Only update the node state with user-drawn shapes
+                    setShapes(userDrawnShapes);
                   },
                 }}
               />

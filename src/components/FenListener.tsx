@@ -50,33 +50,14 @@ function FenListener() {
           const currentlyEnabled = getDefaultStore().get(fenSyncEnabledAtom);
 
           if (currentlyEnabled) {
-            console.log("[FEN Sync] Received FEN update event:", event.payload);
-            // Accept payload as either object with "fen" property or JSON string
-            let fenString: string | undefined = undefined;
-            if (
-              typeof event.payload === "object" &&
-              event.payload !== null &&
-              Object.prototype.hasOwnProperty.call(event.payload, "fen")
-            ) {
-              fenString = (event.payload as { fen: string }).fen;
-            } else if (typeof event.payload === "string") {
-              try {
-                const parsed = JSON.parse(event.payload);
-                if (
-                  typeof parsed === "object" &&
-                  parsed !== null &&
-                  Object.prototype.hasOwnProperty.call(parsed, "fen")
-                ) {
-                  fenString = (parsed as { fen: string }).fen;
-                }
-              } catch (e) {
-                // Not a JSON string, ignore
-              }
-            }
+            // Directly use the payload if it's a non-empty string
+            const fenString = typeof event.payload === 'string' && event.payload.trim() !== '' ? event.payload.trim() : undefined;
+
             if (fenString) {
-              setFen(fenString);
+               console.log("[FEN Sync] Received FEN update:", fenString);
+               setFen(fenString);
             } else {
-              console.warn("[FEN Sync] Ignored FEN update: payload is not an object with a 'fen' property or valid JSON string.", event.payload);
+              console.warn("[FEN Sync] Ignored FEN update: payload is not a valid FEN string.", event.payload);
             }
           } else {
             console.log("[FEN Sync] Ignored FEN update (sync disabled).");

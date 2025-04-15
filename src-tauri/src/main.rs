@@ -128,10 +128,11 @@ async fn close_splashscreen(window: Window) -> Result<(), String> {
 
 // Handler for the FEN POST request
 async fn handle_fen(Extension(app_handle): Extension<AppHandle>, fen: String) {
-    log::info!("[FEN Sync] Received FEN: {}", fen);
+    log::info!("[Backend FEN Handler] Received POST request with FEN: {}", fen);
     // Emit the FEN update event to the frontend
-    if let Err(e) = app_handle.emit("fen-update", &fen) { // Pass fen by reference
-        log::error!("[FEN Sync] Failed to emit fen-update event: {}", e);
+    match app_handle.emit("fen-update", &fen) { // Pass fen by reference
+        Ok(_) => log::info!("[Backend FEN Handler] Successfully emitted fen-update event for: {}", fen),
+        Err(e) => log::error!("[Backend FEN Handler] Failed to emit fen-update event: {}", e),
     }
 }
 
@@ -190,9 +191,9 @@ async fn process_message(msg: Message, my_id: usize, app_handle: &AppHandle, cli
             match serde_json::from_str::<serde_json::Value>(&text) {
                 Ok(json_data) => {
                     if json_data.get("engineId").and_then(|v| v.as_str()) == Some("board_visualization") {
-                        log::info!("[WebSocket] Received analysis message from client {}: {}", my_id, text);
-
-                        // --- BROADCAST LOGIC --- 
+                        // This case might be deprecated now if frontend sends finalShapes directly
+                        log::info!("[WebSocket] Received legacy analysis message from client {}: {}", my_id, text);
+                        // --- BROADCAST LOGIC (Keep for potential future use/debugging) --- 
                         let mut clients_map = clients.lock().await;
                         for (&id, sender) in clients_map.iter_mut() {
                             if id != my_id { // Don't send back to original sender
@@ -206,25 +207,39 @@ async fn process_message(msg: Message, my_id: usize, app_handle: &AppHandle, cli
 
                         // Send confirmation back to the original sender
                         if let Some(sender) = clients_map.get_mut(&my_id) {
-                           let confirmation = r#"{"status":"received"}"#;
+                           let confirmation = r#"{{"status":"received"}}"#;
                            if sender.send(Message::Text(confirmation.to_string())).await.is_err() {
                                log::warn!("[WebSocket] Failed to send confirmation to client {}", my_id);
                            }
                         }
-
-                    } else if json_data.get("fen").is_some() {
-                       log::info!("[WebSocket] Received FEN from client {}: {}", my_id, text);
-                       // If FEN needs broadcasting, add similar logic here
-                       // Emit to Tauri frontend if needed
-                        if let Err(e) = app_handle.emit("fen-update", &text) {
-                           log::error!("[WebSocket] Failed to emit fen-update from WS: {}", e);
+                    } else if json_data.get("finalShapes").is_some() {
+                        log::info!("[WebSocket] Received finalShapes message from client {}: {}", my_id, text);
+                        
+                        // --- BROADCAST LOGIC for finalShapes --- 
+                        let mut clients_map = clients.lock().await;
+                        for (&id, sender) in clients_map.iter_mut() {
+                            if id != my_id { // Don't send back to original sender
+                                log::info!("[WebSocket] Broadcasting finalShapes from {} to {}", my_id, id);
+                                if sender.send(Message::Text(text.clone())).await.is_err() {
+                                    log::warn!("[WebSocket] Failed to send finalShapes to client {}, removing.", id);
+                                    // Consider scheduling removal instead of removing during iteration if issues arise
+                                }
+                            }
                         }
+                        // --- END BROADCAST --- 
 
+                        // Send confirmation back to the original sender (optional, but good practice)
+                        if let Some(sender) = clients_map.get_mut(&my_id) {
+                           let confirmation = r#"{{"status":"received_finalShapes"}}"#; // Specific confirmation
+                           if sender.send(Message::Text(confirmation.to_string())).await.is_err() {
+                               log::warn!("[WebSocket] Failed to send finalShapes confirmation to client {}", my_id);
+                           }
+                        }
                     } else {
                         log::warn!("[WebSocket] Client {} sent unknown JSON structure: {}", my_id, text);
                         // Optional: Send error back to sender
                         if let Some(sender) = clients.lock().await.get_mut(&my_id) {
-                           let error_msg = r#"{"status":"error","message":"Unknown message format"}"#;
+                           let error_msg = r#"{{"status":"error","message":"Unknown message format"}}"#;
                            let _ = sender.send(Message::Text(error_msg.to_string())).await;
                         }
                     }
@@ -233,7 +248,7 @@ async fn process_message(msg: Message, my_id: usize, app_handle: &AppHandle, cli
                     log::warn!("[WebSocket] Client {} sent invalid JSON: {}. Error: {}", my_id, text, e);
                     // Optional: Send error back to sender
                      if let Some(sender) = clients.lock().await.get_mut(&my_id) {
-                        let error_msg = r#"{"status":"error","message":"Invalid JSON"}"#;
+                        let error_msg = r#"{{"status":"error","message":"Invalid JSON"}}"#;
                         let _ = sender.send(Message::Text(error_msg.to_string())).await;
                      }
                 }
@@ -243,7 +258,7 @@ async fn process_message(msg: Message, my_id: usize, app_handle: &AppHandle, cli
             log::info!("[WebSocket] Client {} sent binary message (unsupported)", my_id);
             // Optional: Send error back to sender
              if let Some(sender) = clients.lock().await.get_mut(&my_id) {
-                let error_msg = r#"{"status":"error","message":"Binary messages not supported"}"#;
+                let error_msg = r#"{{"status":"error","message":"Binary messages not supported"}}"#;
                 let _ = sender.send(Message::Text(error_msg.to_string())).await;
              }
         }
