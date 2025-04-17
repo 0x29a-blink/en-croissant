@@ -19,6 +19,7 @@ tsconfig.tsbuildinfo
 .cursor/*
 en-croissant.code-workspace
 chrome-extension/examples*
+memory-bank
 .vscode/*
 !.vscode/extensions.json
 .idea

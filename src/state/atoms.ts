@@ -40,6 +40,9 @@ import { createAsyncZodStorage, createZodStorage, fileStorage } from "./utils";
 // Added for FEN Sync toggle
 export const fenSyncEnabledAtom = atomWithStorage<boolean>("fen-sync-enabled", false);
 
+// Added for chess variant tracking with FEN Sync
+export const activeVariantAtom = atomWithStorage<string>("active-variant", "standard");
+
 const zodArray = <S>(itemSchema: z.ZodType<S>) => {
   const catchValue = {} as never;
 

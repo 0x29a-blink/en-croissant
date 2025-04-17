@@ -1,6 +1,7 @@
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import {
   activeTabAtom,
+  activeVariantAtom,
   allEnabledAtom,
   currentAnalysisTabAtom,
   currentExpandedEnginesAtom,
@@ -81,6 +82,7 @@ function AnalysisPanel() {
   const [tab, setTab] = useAtom(currentAnalysisTabAtom);
   const [expanded, setExpanded] = useAtom(currentExpandedEnginesAtom);
   const [fenSyncEnabled, setFenSyncEnabled] = useAtom(fenSyncEnabledAtom);
+  const activeVariant = useAtomValue(activeVariantAtom);
 
   const [pos] = positionFromFen(currentNodeFen);
   const navigate = useNavigate();
@@ -164,11 +166,20 @@ function AnalysisPanel() {
                   <Text ta="center" fw="bold" fz="xs">
                     FEN Sync
                   </Text>
-                  <Switch
-                    checked={fenSyncEnabled}
-                    onChange={(event) => setFenSyncEnabled(event.currentTarget.checked)}
-                    size="md"
-                  />
+                  <Group gap="xs">
+                    <Switch
+                      checked={fenSyncEnabled}
+                      onChange={(event) => setFenSyncEnabled(event.currentTarget.checked)}
+                      size="md"
+                    />
+                    {fenSyncEnabled && (
+                      <Text fz="xs" c="dimmed">
+                        {activeVariant !== 'standard' ? 
+                          t('Common.Variant', { variant: activeVariant.replace(/([A-Z])/g, ' $1').trim() }) : 
+                          null}
+                      </Text>
+                    )}
+                  </Group>
                 </Stack>
               </Group>
             </Paper>
