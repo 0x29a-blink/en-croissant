@@ -17,6 +17,7 @@ tsconfig.tsbuildinfo
 
 # Editor directories and files
 .cursor/*
+en-croissant.code-workspace
 chrome-extension/examples*
 .vscode/*
 !.vscode/extensions.json
